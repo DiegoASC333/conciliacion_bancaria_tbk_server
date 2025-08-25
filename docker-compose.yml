@@ -1,0 +1,29 @@
+services:
+  backend:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: conciliacion_back_dev
+    ports:
+      - '3000:3000' # host:container
+    environment:
+      NODE_ENV: development
+      SSH_HOST: ${SSH_HOST}
+      SSH_PORT: ${SSH_PORT}
+      SSH_USER: ${SSH_USER}
+      SSH_PASSWORD: ${SSH_PASSWORD}
+      REMOTE_SCRIPT: ${REMOTE_SCRIPT}
+      REMOTE_DAT_PATH: ${REMOTE_DAT_PATH}
+      REMOTE_DAT_DIR: ${REMOTE_DAT_DIR}
+      LOCAL_DOWNLOAD_PATH: ${LOCAL_DOWNLOAD_PATH}
+      ORACLE_USER: ${ORACLE_USER}
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD}
+      ORACLE_CONNECT_STRING: ${ORACLE_CONNECT_STRING}
+      ORACLE_PORT: ${ORACLE_PORT}
+      ORACLE_SERVICE_NAME: ${ORACLE_SERVICE_NAME}
+      CHOKIDAR_USEPOLLING: 'true'
+    volumes:
+      - .:/app
+      - /app/node_modules
+    restart: unless-stopped
