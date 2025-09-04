@@ -14,6 +14,10 @@ const { procesarArchivosRemotos } = require('./controllers/procesarDatGzControll
 const { procesarArchivosRemotosAutomatico } = require('./controllers/procesoActualController.js');
 const { getStatusCuadratura } = require('./controllers/statusCuadraturaController.js');
 const { listarporTipo } = require('./controllers/statusCuadraturaController.js');
+const { reprocesoCuponController } = require('./controllers/reprocesoCuponController.js');
+const { postEnviarTesoreria } = require('./controllers/auditoriaDafeController.js');
+const { getLiquidacionController } = require('./controllers/liquidacionController.js');
+const { getCartolaTesoreriaController } = require('./controllers/cartolaTesoreriaController.js');
 //Rutas
 router.post('/ejecutar-script', ejecutarScript); //ejecucion manual de script remoto
 router.get('/listar-archivos-nuevos', listarArchivosNuevos); // prueba para listar archivos en servidor
@@ -26,5 +30,9 @@ router.post('/procesar-dat-gz', procesarArchivosRemotos); // procesar archivos r
 router.post('/procesar-archivos-remotos-automatico', procesarArchivosRemotosAutomatico); //procesar archivos remotos automáticos
 router.get('/status-cuadratura', getStatusCuadratura); // obtener estado de cuadratura diario
 router.get('/status-cuadratura/:tipo', listarporTipo); //listar por tipo los registros
+router.post('/reproceso-cupon', reprocesoCuponController); // reprocesar cupon
+router.post('/auditoria-dafe', postEnviarTesoreria); // auditoría y envío a tesorería
+router.post('/liquidacion', getLiquidacionController); // obtener liquidacion por tipo
+router.post('/cartola-tbk', getCartolaTesoreriaController);
 
 module.exports = router;

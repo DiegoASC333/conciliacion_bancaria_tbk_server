@@ -26,23 +26,28 @@ const listarporTipo = async (req, res) => {
   const tipo_flag = {
     aprobados: ['ENCONTRADO'],
     rechazados: ['NO EXISTE', 'PENDIENTE'],
-    reprocesados: ['REPROCESADO', 'RE-PROCESADO'],
-    total: ['total'],
+    reprocesados: ['REPROCESO', 'RE-PROCESADO'],
+    total: null,
   };
 
   try {
     const { tipo } = req.params;
-    const estado = tipo_flag[tipo?.toLowerCase()];
-    if (!estado) {
-      return res
-        .status(400)
-        .json(fail(`Flag desconocido: ${flag}. Usa: ${Object.keys(tipo_flag).join(', ')}`));
+    const clave = (tipo || '').toLowerCase();
+
+    if (!(clave in tipo_flag)) {
+      return res.status(400).json({
+        success: false,
+        status: 400,
+        message: `Flag desconocido: ${tipo}. Usa: ${Object.keys(tipo_flag).join(', ')}`,
+      });
     }
-    const status = await listarPorTipo({ tipo: estado });
+
+    const estados = tipo_flag[clave];
+    const data = await listarPorTipo({ estados });
     return res.status(200).json({
       success: true,
       status: 200,
-      data: status,
+      data: data,
     });
   } catch (error) {
     res.status(500).json({ mensaje: 'Error al listar por tip0', error: error.message });
