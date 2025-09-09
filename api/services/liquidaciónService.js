@@ -92,7 +92,7 @@ async function getLiquidacion({ tipo, start, end }) {
       ${comercioExpr}                           AS CODIGO_COMERCIO,
       ${cuponExpr}                            AS CUPON,
       TRUNC(liq_monto / 100)                  AS TOTAL_ABONADO,
-      ${comisionExpr}                           AS COMISION NETA,
+      ${comisionExpr}                           AS COMISION_NETA,
       ${montoBrutoExpr}                         AS COMISION_BRUTA,
       liq_fcom                              AS FECHA_VENTA,
       CASE 
@@ -132,23 +132,26 @@ async function getLiquidacionTotales({ tipo, start, end }) {
 
   const tipoUpper = (tipo || '').toUpperCase();
 
-  // Lógica de expresión para el Código de Comercio (igual que en la otra función)
   let comercioExpr;
   if (tipoUpper === 'LCN') {
-    comercioExpr = `CASE WHEN liq_cprin != 99999999 THEN TRIM(liq_cprin) ELSE TRIM(liq_numc) END`;
+    comercioExpr = `CASE WHEN l.liq_cprin != 99999999 THEN TRIM(l.liq_cprin) ELSE TRIM(l.liq_numc) END`;
   } else {
-    comercioExpr = `TRIM(liq_numc)`;
+    comercioExpr = `TRIM(l.liq_numc)`;
   }
 
   const sql = `
     SELECT
       ${comercioExpr}                           AS CODIGO_COMERCIO,
-      SUM(liq_monto / 100)                     AS TOTAL_MONTO
-    FROM liquidacion_file_tbk
+      c.NOMBRE_COMERCIO AS NOMBRE_COMERCIO,
+      SUM(l.liq_monto / 100)                     AS TOTAL_MONTO
+    FROM liquidacion_file_tbk l
+    LEFT JOIN vec_cob04.codigo_comerico c
+    ON c.codigo_comerico = ${comercioExpr}
     WHERE TIPO_TRANSACCION = :tipo
-      AND DATE_LOAD_BBDD >= :startDate
-      AND DATE_LOAD_BBDD <  :endDate
-    GROUP BY ${comercioExpr}
+    AND l.DATE_LOAD_BBDD >= :startDate
+    AND l.DATE_LOAD_BBDD <  :endDate
+    AND ${comercioExpr} NOT IN ('28208820', '48211418')
+    GROUP BY ${comercioExpr}, c.NOMBRE_COMERCIO
     ORDER BY TOTAL_MONTO DESC
   `;
 

@@ -1,4 +1,8 @@
-const { getDataCartola, getTotalesWebpay } = require('../services/cartolaTesoreriaService');
+const {
+  getDataCartola,
+  getTotalesWebpay,
+  getDataHistorial,
+} = require('../services/cartolaTesoreriaService');
 
 const getCartolaTesoreriaController = async (req, res) => {
   try {
@@ -23,6 +27,23 @@ const getCartolaTesoreriaController = async (req, res) => {
   }
 };
 
+const getDataHistorialRut = async (req, res) => {
+  try {
+    const { rut, tipo } = req.body;
+
+    const res = await getDataHistorial({ rut, tipo });
+
+    res.status(200).json({
+      success: true,
+      status: 200,
+      data: res,
+    });
+  } catch (error) {
+    res.status(500).json({ mensaje: 'Error al traer información', error: error.message });
+  }
+};
+
 module.exports = {
   getCartolaTesoreriaController,
+  getDataHistorialRut,
 };

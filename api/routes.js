@@ -17,7 +17,11 @@ const { listarporTipo } = require('./controllers/statusCuadraturaController.js')
 const { reprocesoCuponController } = require('./controllers/reprocesoCuponController.js');
 const { postEnviarTesoreria } = require('./controllers/auditoriaDafeController.js');
 const { getLiquidacionController } = require('./controllers/liquidacionController.js');
-const { getCartolaTesoreriaController } = require('./controllers/cartolaTesoreriaController.js');
+const {
+  getCartolaTesoreriaController,
+  getDataHistorialRut,
+} = require('./controllers/cartolaTesoreriaController.js');
+
 //Rutas
 router.post('/ejecutar-script', ejecutarScript); //ejecucion manual de script remoto
 router.get('/listar-archivos-nuevos', listarArchivosNuevos); // prueba para listar archivos en servidor
@@ -33,6 +37,7 @@ router.get('/status-cuadratura/:tipo', listarporTipo); //listar por tipo los reg
 router.post('/reproceso-cupon', reprocesoCuponController); // reprocesar cupon
 router.post('/auditoria-dafe', postEnviarTesoreria); // auditoría y envío a tesorería
 router.post('/liquidacion', getLiquidacionController); // obtener liquidacion por tipo
-router.post('/cartola-tbk', getCartolaTesoreriaController);
+router.post('/cartola-tbk', getCartolaTesoreriaController); //obtener cartola
+router.post('/historial-rut', getDataHistorialRut); // obtener data de cartola por rut
 
 module.exports = router;

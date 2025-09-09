@@ -5,13 +5,17 @@ async function getStatusDiarioCuadratura({ start, end }) {
   const connection = await getConnection();
 
   const sql = ` SELECT
-      COUNT(*) AS TOTAL_DIARIO,
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN 1 ELSE 0 END) AS APROBADOS_DIARIO,
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE') THEN 1 ELSE 0 END) AS RECHAZADOS_DIARIO,
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN 1 ELSE 0 END) AS REPROCESADOS_DIARIO
+    COUNT(*) AS TOTAL_DIARIO,
+    SUM(TRUNC(DKTT_DT_AMT_1/100)) AS MONTO_TOTAL_DIARIO,
+    SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN 1 ELSE 0 END) AS APROBADOS_DIARIO,
+    SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_APROBADOS,
+    SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE') THEN 1 ELSE 0 END) AS RECHAZADOS_DIARIO,
+    SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE') THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_RECHAZADOS,
+    SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN 1 ELSE 0 END) AS REPROCESADOS_DIARIO,
+    SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_REPROCESADOS
     FROM CUADRATURA_FILE_TBK
-     WHERE DATE_LOAD_BBDD >= :startDate
-      AND DATE_LOAD_BBDD <  :endDate`;
+    WHERE DATE_LOAD_BBDD >= :startDate
+    AND DATE_LOAD_BBDD <  :endDate`;
 
   try {
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
@@ -22,9 +26,13 @@ async function getStatusDiarioCuadratura({ start, end }) {
 
     return {
       total_diario: Number(r.TOTAL_DIARIO || 0),
+      monto_total_diario: Number(r.MONTO_TOTAL_DIARIO || 0),
       aprobados_diario: Number(r.APROBADOS_DIARIO || 0),
+      monto_aprobados: Number(r.MONTO_APROBADOS || 0),
       rechazados_diario: Number(r.RECHAZADOS_DIARIO || 0),
+      monto_rechazados: Number(r.MONTO_RECHAZADOS || 0),
       reprocesados_diario: Number(r.REPROCESADOS_DIARIO || 0),
+      monto_reprocesados: Number(r.MONTO_REPROCESADOS || 0),
     };
   } catch (error) {
     console.error('error', error);
@@ -78,7 +86,7 @@ async function listarPorTipo({ estados, validarCupon = true }) {
         DKTT_TIPO_CUOTA                    AS TIPO_CUOTA,
         DKTT_DT_CANTI_CUOTAS               AS CUOTAS,
         TO_CHAR(TO_DATE(TO_CHAR(DKTT_DT_FECHA_PAGO, 'FM000000'), 'RRMMDD'), 'YYYYMMDD') AS FECHA_ABONO,
-        TO_CHAR(TO_DATE(TO_CHAR(DKTT_DT_TRAN_DAT, 'FM000000'), 'RRMMDD'), 'YYYYMMDD')  AS FECHA_TRANSACCION,
+        TO_CHAR(TO_DATE(TO_CHAR(DKTT_DT_TRAN_DAT, 'FM000000'), 'RRMMDD'), 'YYYYMMDD')  AS FECHA_VENTA,
         CASE
           WHEN tipo_transaccion = 'CCN' THEN 'Crédito'
           WHEN tipo_transaccion = 'CDN' THEN 'Débito'
