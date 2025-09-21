@@ -1,56 +1,59 @@
-const { getConnection } = require('../config/utils');
+const { getConnection, exportToExcel } = require('../config/utils');
+const { buildCartolaQuery } = require('../config/queryBuilder');
 const oracledb = require('oracledb');
 
 async function getDataCartola({ tipo, start, end }) {
   const connection = await getConnection();
 
-  // Espera body: { tipo: 'LCN', start: '06012025', end: '07012025' }  // DDMMYYYY
-  const sql = `
-    SELECT
-      TO_NUMBER(TRIM(liq.liq_orpedi))              AS cupon,
-      liq.liq_fcom                                 AS fecha_venta,
-      wt.orden_compra                              AS rut,
-      TRUNC(liq.liq_monto/100)                                AS monto,
-      liq.liq_cuotas                               AS cuota,
-      liq.liq_ntc                                  AS total_cuotas,
-      NVL(liq.liq_ntc, 0) - NVL(liq.liq_cuotas, 0) AS cuotas_restantes,
-      CASE WHEN NVL(liq.liq_cuotas,0) > 0
-           THEN (liq.liq_monto / 100) / liq.liq_cuotas
-           ELSE NULL
-      END                                          AS deuda_pagada,
-      (NVL(liq.liq_ntc,0) - NVL(liq.liq_cuotas,0)) * (NVL(liq.liq_monto,0) / 100) AS deuda_por_pagar,
-      liq.liq_fpago                                AS fecha_abono,
-      liq.liq_nombre_banco                         AS nombre_banco
-    FROM (
-      SELECT *
-      FROM vec_cob04.liquidacion_file_tbk
-      WHERE REGEXP_LIKE(TRIM(liq_orpedi), '^\\d+$')              -- cupon numérico
-        AND REGEXP_LIKE(TRIM(liq_fpago), '^\\d{8}$')             -- fecha DDMMYYYY
-    ) liq
-    JOIN (
-      SELECT *
-      FROM vec_cob02.webpay_trasaccion
-      WHERE REGEXP_LIKE(TRIM(id_sesion), '^\\d+$')               -- id_sesion numérico
-    ) wt
-      ON TO_NUMBER(TRIM(liq.liq_orpedi)) = TO_NUMBER(TRIM(wt.id_sesion))
-    WHERE
-      liq.tipo_transaccion = :tipo
-      AND TO_DATE(TRIM(liq.liq_fpago), 'DDMMYYYY')
-          BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
-              AND TO_DATE(:fecha_fin, 'DDMMYYYY')
-  `;
-
   try {
-    const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
-    // IMPORTANTE: los nombres del objeto deben coincidir con los placeholders del SQL
-    const binds = {
-      tipo,
-      fecha_ini: start, // '06012025'
-      fecha_fin: end, // '07012025'
-    };
+    const { sql, binds } = buildCartolaQuery({ tipo, start, end });
 
+    const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
+    //const binds = { tipo, fecha_ini: start, fecha_fin: end };
     const res = await connection.execute(sql, binds, options);
-    return res.rows || [];
+
+    // Normalizamos los datos según tus reglas
+    const filas = (res.rows || []).map((r) => {
+      let cuota = r.CUOTA;
+      let cuotas_restantes = r.CUOTAS_RESTANTES;
+      let total_cuotas = r.TOTAL_CUOTAS;
+      let deuda_pagada = r.DEUDA_PAGADA;
+      let deuda_por_pagar = r.DEUDA_POR_PAGAR;
+
+      if (tipo === 'LCN') {
+        if (!total_cuotas || total_cuotas === 0) {
+          // Caso: no hay info de cuotas => venta contado simulada
+          cuota = 1;
+          total_cuotas = 1;
+          cuotas_restantes = 0;
+          deuda_pagada = r.MONTO;
+          deuda_por_pagar = 0;
+        } else {
+          // Caso: hay info real de cuotas => recalculamos bien
+          cuotas_restantes = total_cuotas - cuota;
+          deuda_pagada = (cuota * r.MONTO) / total_cuotas;
+          deuda_por_pagar = r.MONTO - deuda_pagada;
+        }
+      } else if (tipo === 'LDN') {
+        // débito
+        cuota = 1;
+        total_cuotas = 1;
+        cuotas_restantes = 0;
+        deuda_pagada = r.MONTO;
+        deuda_por_pagar = 0;
+      }
+
+      return {
+        ...r,
+        CUOTA: cuota,
+        TOTAL_CUOTAS: total_cuotas,
+        CUOTAS_RESTANTES: cuotas_restantes,
+        DEUDA_PAGADA: deuda_pagada,
+        DEUDA_POR_PAGAR: deuda_por_pagar,
+      };
+    });
+
+    return filas;
   } catch (error) {
     console.error('error', error);
     throw error;
@@ -198,8 +201,87 @@ async function getDataHistorial({ rut, tipo }) {
   }
 }
 
+async function getCartolaExcel({ tipo, start, end }, res) {
+  let connection;
+
+  try {
+    connection = await getConnection();
+
+    // Construir query dinámica
+    const { sql, binds } = buildCartolaQuery({ tipo, start, end });
+
+    const result = await connection.execute(sql, binds, {
+      outFormat: oracledb.OUT_FORMAT_OBJECT,
+    });
+
+    // Llamar al utils para exportar Excel
+    await exportToExcel(result.rows, res, `Cartola_${tipo}.xlsx`);
+  } catch (err) {
+    console.error('Error exportando Excel:', err);
+    res.status(500).json({ error: 'Error al exportar Excel' });
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (err) {
+        console.error('Error cerrando conexión:', err);
+      }
+    }
+  }
+}
+
+// servicio temporal para pruebas
+async function getDataHistorialMock({ rut, tipo }) {
+  // Datos de prueba, todos con el mismo rut
+  const datosFicticios = [
+    {
+      cupon_Credito: 743309,
+      rut: rut, // mismo rut que se envía
+      fecha_venta: '14052025',
+      fecha_abono: '16052025',
+      cuota_pagada: 1,
+      TOTAL_CUOTAS: 5,
+      monto: 30205,
+      nombre: 'Juan Pérez',
+      cuotas_restantes: 4,
+      deuda_pagada: 30205,
+      deuda_por_pagar: 151025,
+    },
+    {
+      cupon_Credito: 743310,
+      rut: rut,
+      fecha_venta: '15052025',
+      fecha_abono: '17052025',
+      cuota_pagada: 2,
+      TOTAL_CUOTAS: 5,
+      monto: 50000,
+      nombre: 'Juan Pérez',
+      cuotas_restantes: 3,
+      deuda_pagada: 25000,
+      deuda_por_pagar: 75000,
+    },
+    {
+      cupon_Credito: 743311,
+      rut: rut,
+      fecha_venta: '16052025',
+      fecha_abono: '18052025',
+      cuota_pagada: 3,
+      TOTAL_CUOTAS: 5,
+      monto: 45000,
+      nombre: 'Juan Pérez',
+      cuotas_restantes: 2,
+      deuda_pagada: 30000,
+      deuda_por_pagar: 60000,
+    },
+  ];
+
+  return datosFicticios;
+}
+
 module.exports = {
   getDataCartola,
   getTotalesWebpay,
   getDataHistorial,
+  getCartolaExcel,
+  getDataHistorialMock,
 };

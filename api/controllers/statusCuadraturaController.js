@@ -31,7 +31,7 @@ const listarporTipo = async (req, res) => {
   };
 
   try {
-    const { tipo } = req.params;
+    const { tipo, tipoTransaccion } = req.params;
     const clave = (tipo || '').toLowerCase();
 
     if (!(clave in tipo_flag)) {
@@ -43,7 +43,13 @@ const listarporTipo = async (req, res) => {
     }
 
     const estados = tipo_flag[clave];
-    const data = await listarPorTipo({ estados });
+
+    const params = {
+      estados: estados,
+      tipoTransaccion: tipoTransaccion ? tipoTransaccion.toUpperCase() : null,
+    };
+
+    const data = await listarPorTipo(params);
     return res.status(200).json({
       success: true,
       status: 200,

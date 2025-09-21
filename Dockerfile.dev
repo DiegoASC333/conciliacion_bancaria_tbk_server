@@ -1,37 +1,34 @@
-# En tu Dockerfile.dev
-# Cambia de '18-slim' a '18'
+FROM node:18
 
-# En tu Dockerfile.dev
-FROM node:18 
+WORKDIR /app
 
-# Dependencias del sistema + Oracle Instant Client 21.x (retrocompatible con 11g)
-# Nota: en Debian el paquete es libnsl2 (NO libnsl). Incluimos ca-certificates.
-# Dependencias del sistema + Instant Client
+# Dependencias del sistema y Oracle Instant Client
 RUN apt-get update && apt-get install -y \
-    wget unzip libaio1 libnsl2 ca-certificates \
- && update-ca-certificates \
+    wget unzip libaio1 libnsl2 build-essential python3 ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
  && wget --no-cookies --no-check-certificate \
       --header "Cookie: oraclelicense=accept-securebackup-cookie" \
       https://download.oracle.com/otn_software/linux/instantclient/2113000/instantclient-basic-linux.x64-21.13.0.0.0dbru.zip \
  && unzip instantclient-basic-linux.x64-21.13.0.0.0dbru.zip -d /opt/oracle \
  && rm instantclient-basic-linux.x64-21.13.0.0.0dbru.zip \
  && ln -s /opt/oracle/instantclient_21_13 /opt/oracle/instantclient \
- && echo /opt/oracle/instantclient > /etc/ld.so.conf.d/oracle-instantclient.conf \
- && ldconfig \
- && rm -rf /var/lib/apt/lists/*
+ && ln -s /opt/oracle/instantclient/libclntsh.so /opt/oracle/libclntsh.so \
+ && echo "/opt/oracle/instantclient" > /etc/ld.so.conf.d/oracle-instantclient.conf \
+ && ldconfig
 
-# Variables de entorno para oracledb
+# Variables de entorno
 ENV LD_LIBRARY_PATH=/opt/oracle/instantclient
 ENV PATH=$PATH:/opt/oracle/instantclient
 
-WORKDIR /app
-
+# Copiar package.json y package-lock.json
 COPY package*.json ./
-RUN npm ci
 
+# Instalar dependencias y recompilar oracledb
+RUN npm install --build-from-source --omit=dev
+
+# Copiar el resto del proyecto
 COPY . .
 
 EXPOSE 3000
 
-# CMD ["npm", "run", "dev"]
 CMD ["node", "index.js"]

@@ -16,10 +16,15 @@ const { getStatusCuadratura } = require('./controllers/statusCuadraturaControlle
 const { listarporTipo } = require('./controllers/statusCuadraturaController.js');
 const { reprocesoCuponController } = require('./controllers/reprocesoCuponController.js');
 const { postEnviarTesoreria } = require('./controllers/auditoriaDafeController.js');
-const { getLiquidacionController } = require('./controllers/liquidacionController.js');
+const {
+  getLiquidacionController,
+  getLiquidacionxls,
+} = require('./controllers/liquidacionController.js');
 const {
   getCartolaTesoreriaController,
   getDataHistorialRut,
+  getCartolaxls,
+  getDataMock,
 } = require('./controllers/cartolaTesoreriaController.js');
 
 //Rutas
@@ -33,11 +38,14 @@ router.post('/procesar-archivos-por-fecha', procesarArchivosPorFecha); // proces
 router.post('/procesar-dat-gz', procesarArchivosRemotos); // procesar archivos remotos .DAT y .DAT.GZ con rango de fechas
 router.post('/procesar-archivos-remotos-automatico', procesarArchivosRemotosAutomatico); //procesar archivos remotos automáticos
 router.get('/status-cuadratura', getStatusCuadratura); // obtener estado de cuadratura diario
-router.get('/status-cuadratura/:tipo', listarporTipo); //listar por tipo los registros
+router.get('/status-cuadratura/:tipo/:tipoTransaccion', listarporTipo); //listar por tipo los registros
 router.post('/reproceso-cupon', reprocesoCuponController); // reprocesar cupon
 router.post('/auditoria-dafe', postEnviarTesoreria); // auditoría y envío a tesorería
 router.post('/liquidacion', getLiquidacionController); // obtener liquidacion por tipo
 router.post('/cartola-tbk', getCartolaTesoreriaController); //obtener cartola
 router.post('/historial-rut', getDataHistorialRut); // obtener data de cartola por rut
+router.post('/liquidacion-excel', getLiquidacionxls); //obtener excel de liquidaciones
+router.post('/cartola-excel', getCartolaxls); //obtener excel de cartola
+router.post('/cartola-mock', getDataMock); //obtener data de mock
 
 module.exports = router;

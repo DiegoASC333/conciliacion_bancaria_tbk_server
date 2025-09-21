@@ -5,6 +5,7 @@ const oracledb = require('oracledb');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const ExcelJS = require('exceljs');
 // Inicializar modo Thick (esto habilita compatibilidad con versiones antiguas)
 oracledb.initOracleClient({ libDir: '/opt/oracle' }); // Cambia según tu sistema
 
@@ -73,6 +74,47 @@ function obtenerRangoDelDiaActual() {
   return { start, end };
 }
 
+/**
+ * Genera un Excel y lo envía directamente en la respuesta HTTP
+ * @param {Array} rows - filas a exportar
+ * @param {object} res - objeto response de Express
+ * @param {string} filename - nombre del archivo
+ */
+async function exportToExcel(rows, res, filename = 'export.xlsx') {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Datos');
+
+  if (rows.length) {
+    sheet.columns = Object.keys(rows[0]).map((k) => ({
+      header: k,
+      key: k,
+      width: 20,
+    }));
+    rows.forEach((row) => sheet.addRow(row));
+  }
+
+  res.setHeader(
+    'Content-Type',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+  res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+
+  await workbook.xlsx.write(res);
+  res.end();
+}
+
+async function parseJSONLob(lob) {
+  if (!lob) return null;
+
+  return new Promise((resolve, reject) => {
+    let json = '';
+    lob.setEncoding('utf8'); // importante
+    lob.on('data', (chunk) => (json += chunk));
+    lob.on('end', () => resolve(json));
+    lob.on('error', (err) => reject(err));
+  });
+}
+
 module.exports = {
   conectarSFTP,
   getConnection,
@@ -81,4 +123,6 @@ module.exports = {
   mkTempFile,
   cleanupTemp,
   obtenerRangoDelDiaActual,
+  exportToExcel,
+  parseJSONLob,
 };

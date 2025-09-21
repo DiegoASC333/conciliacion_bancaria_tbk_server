@@ -1,4 +1,4 @@
-const { getConnection } = require('../config/utils');
+const { getConnection, parseJSONLob } = require('../config/utils');
 const oracledb = require('oracledb');
 
 async function getStatusDiarioCuadratura({ start, end }) {
@@ -43,70 +43,130 @@ async function getStatusDiarioCuadratura({ start, end }) {
   }
 }
 
-// En tu servicio
-async function listarPorTipo({ estados, validarCupon = true }) {
+async function listarPorTipo({ estados, validarCupon = true, tipoTransaccion }) {
   const conn = await getConnection();
   try {
     const binds = {};
     const conditions = [];
 
-    // 1) Filtro por estado (si corresponde)
     if (Array.isArray(estados) && estados.length > 0) {
       const bindNames = estados.map((_, i) => `:estado_${i}`).join(', ');
       estados.forEach((v, i) => (binds[`estado_${i}`] = String(v).toUpperCase()));
-      conditions.push(`UPPER(NVL(STATUS_SAP_REGISTER, '')) IN (${bindNames})`);
+      conditions.push(`UPPER(NVL(c.STATUS_SAP_REGISTER, '')) IN (${bindNames})`);
     }
 
-    // Helper para validar que es numérico y no solo ceros
+    // Filtro por tipo de transacción (NUEVO)
+    if (tipoTransaccion) {
+      conditions.push(`c.tipo_transaccion = :tipoTransaccion`);
+      binds.tipoTransaccion = tipoTransaccion;
+    }
+
     const isValid = (col) => `REGEXP_LIKE(TRIM(${col}), '^[0-9]*[1-9][0-9]*$')`;
 
-    // 2) Filtro de cupón válido (solo para aprobados/reprocesados/total)
     if (validarCupon) {
       conditions.push(
-        `( ${isValid('DKTT_DT_NUMERO_UNICO')} OR ${isValid('DSK_ID_NRO_UNICO')} OR TRIM(DKTT_DT_APPRV_CDE) IS NOT NULL )`
+        `( ${isValid('c.DKTT_DT_NUMERO_UNICO')} OR ${isValid('c.DSK_ID_NRO_UNICO')} OR TRIM(c.DKTT_DT_APPRV_CDE) IS NOT NULL )`
       );
     }
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    // 3) Lógica CUPON único con fallback
     const cuponExpr = `
       CASE
-        WHEN ${isValid('DSK_ID_NRO_UNICO')}     THEN LTRIM(TRIM(DSK_ID_NRO_UNICO), '0')
-        WHEN ${isValid('DKTT_DT_NUMERO_UNICO')} THEN LTRIM(TRIM(DKTT_DT_NUMERO_UNICO), '0')
-        WHEN TRIM(DKTT_DT_APPRV_CDE) IS NOT NULL THEN TRIM(DKTT_DT_APPRV_CDE)
+        WHEN ${isValid('c.DSK_ID_NRO_UNICO')}     THEN LTRIM(TRIM(c.DSK_ID_NRO_UNICO), '0')
+        WHEN ${isValid('c.DKTT_DT_NUMERO_UNICO')} THEN LTRIM(TRIM(c.DKTT_DT_NUMERO_UNICO), '0')
+        WHEN TRIM(c.DKTT_DT_APPRV_CDE) IS NOT NULL THEN TRIM(c.DKTT_DT_APPRV_CDE)
         ELSE NULL
       END
     `;
 
-    const sql = `
-      SELECT
+    const sql = `SELECT
         ${cuponExpr}                       AS CUPON,
-        TRUNC(DKTT_DT_AMT_1/100)           AS MONTO_TRANSACCION,
-        DKTT_TIPO_CUOTA                    AS TIPO_CUOTA,
-        DKTT_DT_CANTI_CUOTAS               AS CUOTAS,
-        TO_CHAR(TO_DATE(TO_CHAR(DKTT_DT_FECHA_PAGO, 'FM000000'), 'RRMMDD'), 'YYYYMMDD') AS FECHA_ABONO,
-        TO_CHAR(TO_DATE(TO_CHAR(DKTT_DT_TRAN_DAT, 'FM000000'), 'RRMMDD'), 'YYYYMMDD')  AS FECHA_VENTA,
+        p.rut AS RUT,
+        vec_cob01.pip_obtiene_nombre(p.rut) as NOMBRE, 
+        TRUNC(c.DKTT_DT_AMT_1/100)           AS MONTO_TRANSACCION,
+        CASE 
+          WHEN c.DKTT_DT_CANTI_CUOTAS IS NULL THEN 0 
+          ELSE c.DKTT_DT_CANTI_CUOTAS 
+        END AS CUOTAS,
+        CASE 
+          WHEN REGEXP_LIKE(TRIM(c.DKTT_DT_FECHA_PAGO), '^[0-9]{6}$')
+            THEN TO_CHAR(TO_DATE(TRIM(c.DKTT_DT_FECHA_PAGO), 'RRMMDD'), 'YYYYMMDD')
+        END AS FECHA_ABONO,
+        CASE 
+          WHEN REGEXP_LIKE(TRIM(c.DKTT_DT_TRAN_DAT), '^[0-9]{6}$')
+            THEN TO_CHAR(TO_DATE(TRIM(c.DKTT_DT_TRAN_DAT), 'RRMMDD'), 'YYYYMMDD')
+        END AS FECHA_VENTA, 
         CASE
-          WHEN tipo_transaccion = 'CCN' THEN 'Crédito'
-          WHEN tipo_transaccion = 'CDN' THEN 'Débito'
-          ELSE tipo_transaccion
+          WHEN c.tipo_transaccion = 'CCN' THEN 'Crédito'
+          WHEN c.tipo_transaccion = 'CDN' THEN 'Débito'
+          ELSE c.tipo_transaccion
         END AS TIPO_TRANSACCION
-      FROM cuadratura_file_tbk
+      FROM cuadratura_file_tbk c
+      LEFT JOIN proceso_cupon p ON TO_CHAR(p.cupon) = ${cuponExpr}
       ${whereClause}
-       ORDER BY 
-        CASE 
-          WHEN REGEXP_LIKE(${cuponExpr}, '^[0-9]+$') THEN 1 ELSE 2 
-        END, -- primero los numéricos
-        CASE 
-          WHEN REGEXP_LIKE(${cuponExpr}, '^[0-9]+$') THEN TO_NUMBER(${cuponExpr})
-        END, -- orden numérico real
-        ${cuponExpr}, -- luego orden alfabético para los alfanuméricos
-        date_load_bbdd DESC NULLS LAST
+      ORDER BY 
+      CASE 
+        WHEN REGEXP_LIKE(${cuponExpr}, '^[0-9]+$') THEN 1 ELSE 2 
+      END, 
+      CASE
+        WHEN REGEXP_LIKE(${cuponExpr}, '^[0-9]+$') THEN LPAD(${cuponExpr}, 20, '0')
+        ELSE ${cuponExpr}
+      END, 
+      c.date_load_bbdd DESC NULLS LAST
     `;
 
     const res = await conn.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
-    return res.rows || [];
+
+    const filas = await Promise.all(
+      (res.rows || []).map(async (r) => {
+        let fecha_vencimiento = 'No encontrado';
+        let carrera = 'No encontrado';
+        let nombre_carrera = 'No encontrado';
+        let tipo_documento = 'No encontrado';
+
+        if (r.JSON_DATA) {
+          try {
+            let jsonStr;
+
+            // si es un LOB, primero leerlo
+            if (r.JSON_DATA instanceof oracledb.Lob) {
+              jsonStr = await parseJSONLob(r.JSON_DATA);
+            } else {
+              jsonStr = r.JSON_DATA; // si ya es string
+            }
+
+            const obj = JSON.parse(jsonStr);
+            const data = obj.data && typeof obj.data === 'object' ? obj.data : {};
+            fecha_vencimiento = data.FECHA_VENCIMIENTO ?? 'No encontrado';
+            nombre_carrera = data.NOMBRE_CARRERA ?? 'No encontrado';
+            carrera = data.CARRERA ?? 'No encontrado';
+            tipo_documento = data.TIPO_DOCUEMNTO ?? 'No encontrado';
+          } catch (err) {
+            console.error('Error parseando JSON:', r.JSON_DATA, err);
+          }
+        }
+
+        return {
+          RUT: r.RUT,
+          NOMBRE: r.NOMBRE,
+          CUOTAS: r.CUOTAS,
+          CUPON: r.CUPON,
+          FECHA_ABONO: r.FECHA_ABONO,
+          FECHA_VENTA: r.FECHA_VENTA,
+          MONTO_TRANSACCION: r.MONTO_TRANSACCION,
+          // Campos extraídos del JSON
+          fecha_vencimiento,
+          nombre_carrera,
+          carrera,
+          tipo_documento,
+          TIPO_TRANSACCION: r.TIPO_TRANSACCION,
+        };
+      })
+    );
+
+    return filas;
+    //return res.rows || [];
   } finally {
     try {
       await conn.close();
