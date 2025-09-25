@@ -1,10 +1,11 @@
-const { obtenerRangoDelDiaActual } = require('../config/utils');
+// const { obtenerRangoDelDiaActual } = require('../config/utils');
 const { getStatusDiarioCuadratura, listarPorTipo } = require('../services/statusCuadraturaService');
 
 const getStatusCuadratura = async (req, res) => {
   try {
-    const { start, end } = obtenerRangoDelDiaActual();
-    const status = await getStatusDiarioCuadratura({ start, end });
+    //const { start, end } = obtenerRangoDelDiaActual();
+    const { fecha } = req.params;
+    const status = await getStatusDiarioCuadratura({ fecha });
 
     return res.status(200).json({
       success: true,
@@ -31,7 +32,7 @@ const listarporTipo = async (req, res) => {
   };
 
   try {
-    const { tipo, tipoTransaccion } = req.params;
+    const { fecha, tipo, tipoTransaccion } = req.params;
     const clave = (tipo || '').toLowerCase();
 
     if (!(clave in tipo_flag)) {
@@ -47,6 +48,7 @@ const listarporTipo = async (req, res) => {
     const params = {
       estados: estados,
       tipoTransaccion: tipoTransaccion ? tipoTransaccion.toUpperCase() : null,
+      fecha: fecha,
     };
 
     const data = await listarPorTipo(params);

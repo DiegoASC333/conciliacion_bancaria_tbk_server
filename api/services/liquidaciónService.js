@@ -2,10 +2,10 @@ const { getConnection, exportToExcel } = require('../config/utils');
 const { buildLiquidacionQuery } = require('../config/queryBuilder');
 const oracledb = require('oracledb');
 
-async function getLiquidacion({ tipo, start, end }) {
+async function getLiquidacion({ tipo, startLCN, startLDN }) {
   const connection = await getConnection();
   try {
-    const { sql, binds } = buildLiquidacionQuery({ tipo, start, end });
+    const { sql, binds } = buildLiquidacionQuery({ tipo, startLCN, startLDN });
     const res = await connection.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
     return res.rows || [];
   } finally {
@@ -15,10 +15,21 @@ async function getLiquidacion({ tipo, start, end }) {
   }
 }
 
-async function getLiquidacionTotales({ tipo, start, end }) {
+async function getLiquidacionTotales({ tipo, startLCN, startLDN }) {
   const connection = await getConnection();
 
   const tipoUpper = (tipo || '').toUpperCase();
+
+  let where = '';
+  let binds = {};
+
+  if (tipoUpper === 'LCN') {
+    where = "TIPO_TRANSACCION = 'LCN' AND liq_fpago = :fecha";
+    binds.fecha = startLCN;
+  } else if (tipoUpper === 'LDN') {
+    where = "TIPO_TRANSACCION = 'LDN' AND liq_fedi = :fecha";
+    binds.fecha = startLDN;
+  }
 
   let comercioExpr;
   if (tipoUpper === 'LCN') {
@@ -32,12 +43,10 @@ async function getLiquidacionTotales({ tipo, start, end }) {
       ${comercioExpr}                           AS CODIGO_COMERCIO,
       c.NOMBRE_COMERCIO AS NOMBRE_COMERCIO,
       SUM(l.liq_monto / 100)                     AS TOTAL_MONTO
-    FROM liquidacion_file_tbk l
-    LEFT JOIN vec_cob04.codigo_comerico c
+      FROM liquidacion_file_tbk l
+      LEFT JOIN vec_cob04.codigo_comerico c
     ON c.codigo_comerico = ${comercioExpr}
-    WHERE TIPO_TRANSACCION = :tipo
-    AND l.DATE_LOAD_BBDD >= :startDate
-    AND l.DATE_LOAD_BBDD <  :endDate
+    WHERE ${where}
     AND ${comercioExpr} NOT IN ('28208820', '48211418')
     GROUP BY ${comercioExpr}, c.NOMBRE_COMERCIO
     ORDER BY TOTAL_MONTO DESC
@@ -45,7 +54,7 @@ async function getLiquidacionTotales({ tipo, start, end }) {
 
   try {
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
-    const binds = { tipo: tipoUpper, startDate: start, endDate: end };
+    //const binds = { tipo: tipoUpper, startLCN, startLDN };
     const res = await connection.execute(sql, binds, options);
     return res.rows || [];
   } catch (error) {

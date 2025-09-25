@@ -1,7 +1,20 @@
-function buildLiquidacionQuery({ tipo, start, end }) {
+function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
   const tipoUpper = (tipo || '').toUpperCase();
 
   const isValid = (col) => `REGEXP_LIKE(TRIM(${col}), '^[0-9]*[1-9][0-9]*$')`;
+
+  let where = '';
+  let binds = {};
+
+  if (tipoUpper === 'LCN') {
+    where = "TIPO_TRANSACCION = 'LCN' AND liq_fpago = :fecha";
+    binds.fecha = startLCN;
+  } else if (tipoUpper === 'LDN') {
+    where = "TIPO_TRANSACCION = 'LDN' AND liq_fedi = :fecha";
+    binds.fecha = startLDN;
+  } else {
+    throw new Error(`Tipo de transacción no soportado: ${tipo}`);
+  }
 
   // CUPON
   let cuponExpr;
@@ -63,13 +76,23 @@ function buildLiquidacionQuery({ tipo, start, end }) {
   `;
 
   // Fecha Venta
+  // const fechaVenta = `
+  //   CASE
+  //     WHEN TIPO_TRANSACCION = 'LCN' THEN TO_CHAR(TO_DATE(liq_fcom, 'DDMMYYYY'), 'DD/MM/YYYY')
+  //     WHEN TIPO_TRANSACCION = 'LDN' THEN TO_CHAR(TO_DATE(liq_fcom, 'DD/MM/YY'), 'DD/MM/YYYY')
+  //     ELSE NULL
+  //   END
+  // `;
+
   const fechaVenta = `
-    CASE 
-      WHEN TIPO_TRANSACCION = 'LCN' THEN TO_CHAR(TO_DATE(liq_fcom, 'DDMMYYYY'), 'DD/MM/YYYY')
-      WHEN TIPO_TRANSACCION = 'LDN' THEN TO_CHAR(TO_DATE(liq_fcom, 'DD/MM/YY'), 'DD/MM/YYYY')
-      ELSE NULL
-    END
-  `;
+  TO_CHAR( -- 3. Finalmente, da el formato de salida que quieres 'DD/MM/YYYY'
+    TO_DATE( -- 2. Convierte la cadena de 8 dígitos a una fecha real
+      LPAD(TO_CHAR(liq_fcom), 8, '0'), -- 1. Transforma el NÚMERO a una CADENA de 8 dígitos, rellenando con '0' a la izquierda si es necesario
+      'DDMMYYYY'
+    ),
+    'DD/MM/YYYY'
+  )
+`;
 
   const orderBy = `
     ORDER BY
@@ -100,14 +123,12 @@ function buildLiquidacionQuery({ tipo, start, end }) {
       END AS TOTAL_CUOTAS,
       ${codAutorizacionExpr}    AS CODIGO_AUTORIZACION
     FROM liquidacion_file_tbk
-    WHERE TIPO_TRANSACCION = :tipo
-      AND DATE_LOAD_BBDD >= :startDate
-      AND DATE_LOAD_BBDD <  :endDate
+    WHERE
+    ${where}
     ${orderBy}
   `;
 
-  const binds = { tipo: tipoUpper, startDate: start, endDate: end };
-
+  //const binds = { tipo: tipoUpper, startLCN, startLDN };
   return { sql, binds };
 }
 

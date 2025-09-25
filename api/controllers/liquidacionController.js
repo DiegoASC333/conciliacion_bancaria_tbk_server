@@ -3,19 +3,47 @@ const {
   getLiquidacionTotales,
   getLiquidacionExcel,
 } = require('../services/liquidaciónService');
-const { obtenerRangoDelDiaActual } = require('../config/utils');
+const { obtenerRangoDelDiaActual, formatearFechaParaDB } = require('../config/utils');
 
 const getLiquidacionController = async (req, res) => {
   try {
-    const { tipo } = req.body;
-    const { start, end } = obtenerRangoDelDiaActual();
-    // const status = await getLiquidacion({ tipo, start, end });
+    const { tipo, fecha } = req.body;
 
-    // Llama a ambas funciones de forma paralela para mayor eficiencia
+    if (!fecha) {
+      return res.status(400).json({ mensaje: 'Fecha no proporcionada.' });
+    }
+
+    let startLCN = null;
+    let startLDN = null;
+
+    if (tipo.toUpperCase() === 'LCN') {
+      // De 2025-05-28 -> 28052025
+      const [yyyy, mm, dd] = fecha.split('-');
+      startLCN = `${dd}${mm}${yyyy}`;
+      console.log(`Consulta LCN - fecha enviada: ${startLCN}`);
+    } else if (tipo.toUpperCase() === 'LDN') {
+      // De 2025-05-13 -> 13/05/25
+      const [yyyy, mm, dd] = fecha.split('-');
+      startLDN = `${dd}/${mm}/${yyyy.slice(2)}`;
+      console.log(`Consulta LDN - fecha enviada: ${startLDN}`);
+    }
+
     const [detalles, totales] = await Promise.all([
-      getLiquidacion({ tipo, start, end }),
-      getLiquidacionTotales({ tipo, start, end }),
+      getLiquidacion({ tipo, startLCN, startLDN }),
+      getLiquidacionTotales({ tipo, startLCN, startLDN }),
     ]);
+
+    if (!detalles || detalles.length === 0) {
+      return res.status(200).json({
+        success: true,
+        status: 200,
+        data: {
+          detalles_transacciones: [],
+          totales_por_comercio: [],
+        },
+        mensaje: 'No existen datos para la fecha seleccionada.',
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -26,7 +54,11 @@ const getLiquidacionController = async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(500).json({ mensaje: 'Error al listar por tip0', error: error.message });
+    console.error(error);
+    res.status(500).json({
+      mensaje: 'Error al listar por tipo',
+      error: error.message,
+    });
   }
 };
 

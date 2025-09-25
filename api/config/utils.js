@@ -114,6 +114,35 @@ async function parseJSONLob(lob) {
     lob.on('error', (err) => reject(err));
   });
 }
+// Función para obtener rangos de un día específico en formato que Oracle reconoce
+function obtenerRangoDeFechaExacta(fechaStr) {
+  const fecha = new Date(fechaStr);
+
+  const pad = (n) => n.toString().padStart(2, '0');
+  const startLCN = `${pad(fecha.getDate())}${pad(fecha.getMonth() + 1)}${fecha.getFullYear()}`;
+  const endFecha = new Date(fecha);
+  endFecha.setDate(endFecha.getDate() + 1);
+  const endLCN = `${pad(endFecha.getDate())}${pad(endFecha.getMonth() + 1)}${endFecha.getFullYear()}`;
+
+  const startLDN = `${pad(fecha.getDate())}/${pad(fecha.getMonth() + 1)}/${fecha.getFullYear().toString().slice(-2)}`;
+  const endLDN = `${pad(endFecha.getDate())}/${pad(endFecha.getMonth() + 1)}/${endFecha.getFullYear().toString().slice(-2)}`;
+
+  return { startLCN, endLCN, startLDN, endLDN };
+}
+
+function formatearFechaParaDB(fechaStr) {
+  const fecha = new Date(fechaStr);
+
+  const dd = String(fecha.getDate()).padStart(2, '0');
+  const mm = String(fecha.getMonth() + 1).padStart(2, '0');
+  const yyyy = fecha.getFullYear();
+  const yy = String(yyyy).slice(-2);
+
+  return {
+    startLCN: `${dd}${mm}${yyyy}`, // Ej: 29052025
+    startLDN: `${dd}/${mm}/${yy}`, // Ej: 29/05/25
+  };
+}
 
 module.exports = {
   conectarSFTP,
@@ -125,4 +154,6 @@ module.exports = {
   obtenerRangoDelDiaActual,
   exportToExcel,
   parseJSONLob,
+  obtenerRangoDeFechaExacta,
+  formatearFechaParaDB,
 };

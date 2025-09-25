@@ -1,7 +1,7 @@
 const { getConnection, parseJSONLob } = require('../config/utils');
 const oracledb = require('oracledb');
 
-async function getStatusDiarioCuadratura({ start, end }) {
+async function getStatusDiarioCuadratura({ fecha }) {
   const connection = await getConnection();
 
   const sql = ` SELECT
@@ -14,12 +14,11 @@ async function getStatusDiarioCuadratura({ start, end }) {
     SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN 1 ELSE 0 END) AS REPROCESADOS_DIARIO,
     SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_REPROCESADOS
     FROM CUADRATURA_FILE_TBK
-    WHERE DATE_LOAD_BBDD >= :startDate
-    AND DATE_LOAD_BBDD <  :endDate`;
+    WHERE DKTT_DT_FECHA_VENTA = :fecha`;
 
   try {
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
-    const binds = { startDate: start, endDate: end }; // JS Date -> bind DATE/TIMESTAMP
+    const binds = { fecha: fecha }; // JS Date -> bind DATE/TIMESTAMP
 
     const res = await connection.execute(sql, binds, options);
     const r = res.rows?.[0] || {};
@@ -43,7 +42,7 @@ async function getStatusDiarioCuadratura({ start, end }) {
   }
 }
 
-async function listarPorTipo({ estados, validarCupon = true, tipoTransaccion }) {
+async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransaccion }) {
   const conn = await getConnection();
   try {
     const binds = {};
@@ -59,6 +58,11 @@ async function listarPorTipo({ estados, validarCupon = true, tipoTransaccion }) 
     if (tipoTransaccion) {
       conditions.push(`c.tipo_transaccion = :tipoTransaccion`);
       binds.tipoTransaccion = tipoTransaccion;
+    }
+
+    if (fecha) {
+      conditions.push(`c.DKTT_DT_FECHA_VENTA = :fecha`);
+      binds.fecha = fecha;
     }
 
     const isValid = (col) => `REGEXP_LIKE(TRIM(${col}), '^[0-9]*[1-9][0-9]*$')`;

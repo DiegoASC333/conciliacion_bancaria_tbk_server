@@ -1,28 +1,91 @@
 const { getConnection } = require('../config/utils');
 const oracledb = require('oracledb');
 
-async function enviarATesoreriaSoloSiSinPendientes({ usuarioId, observacion }) {
+async function enviarATesoreriaSoloSiSinPendientes({ usuarioId, observacion, fecha, totalDiario }) {
   const conn = await getConnection();
+
   try {
     // Ejemplo simple: contar aprobados por enviar (puedes dejar 0 si quieres ultra-minimal)
     const rAprob = await conn.execute(
       `SELECT COUNT(*) AS CANT
          FROM CUADRATURA_FILE_TBK
-        WHERE STATUS_SAP_REGISTER = 'APROBADO'`,
-      [],
+        WHERE STATUS_SAP_REGISTER = 'ENCONTRADO'
+        AND DKTT_DT_FECHA_VENTA = :fecha`,
+      { fecha: fecha },
       { outFormat: oracledb.OUT_FORMAT_OBJECT }
     );
     const cant = rAprob.rows[0].CANT ?? 0;
 
+    if (cant === 0) {
+      const err = new Error('No hay registros aprobados para enviar en la fecha especificada.');
+      err.status = 404;
+      throw err;
+    }
+
     await conn.execute(
-      `INSERT INTO LOG_ENVIO_TESORERÍA (ID_AUD, USUARIO, REGISTROS_ENVIADOS)
-       VALUES (SEQ_AUD_ENVIO_TESORERIA.NEXTVAL, :usuario, :cant)`,
-      { usuario: usuarioId, cant }, // <-- SOLO binds usados
+      `INSERT INTO LOG_ENVIO_TESORERÍA (ID_AUD, DETALLE_AUDITORIA,USUARIO, REGISTROS_ENVIADOS, FECHA_ENVIO)
+       VALUES (SEQ_AUD_ENVIO_TESORERIA.NEXTVAL, :totalDiario, :usuario, :cant, SYSDATE)`,
+      { usuario: usuarioId, cant, totalDiario },
+      { autoCommit: false }
+    );
+
+    const moverCreditosSql = `
+      INSERT INTO CCN_TBK_HISTORICO (
+      ID_CCN, DKTT_DT_REG, DKTT_DT_TYP, DKTT_DT_TC, DKTT_DT_SEQ_NUM,
+      DKTT_DT_TRAN_DAT, DKTT_DT_TRAN_TIM, DKTT_DT_INST_RETAILER, DKTT_DT_ID_RETAILER,
+      DKTT_DT_NAME_RETAILER, DKTT_DT_CARD, DKTT_DT_AMT_1, DKTT_DT_AMT_PROPINA, DKTT_TIPO_CUOTA,
+      DKTT_DT_CANTI_CUOTAS, DKTT_DT_RESP_CDE, DKTT_DT_APPRV_CDE, DKTT_DT_TERM_NAME, DKTT_DT_ID_CAJA, 
+      DKTT_DT_NUM_BOLETA, DKTT_DT_AUTH_TRACK2, DKTT_DT_FECHA_VENTA, DKTT_DT_HORA_VENTA, DKTT_DT_FECHA_PAGO, 
+      DKTT_DT_COD_RECHAZO, DKTT_DT_GLOSA_RECHAZO, DKTT_DT_VAL_CUOTA, DKTT_DT_VAL_TASA, DKTT_DT_NUMERO_UNICO, 
+      DKTT_DT_TIPO_MONEDA, DKTT_DT_ID_RETAILER_RE,DKTT_DT_COD_SERVICIO, DKTT_DT_VCI, DKTT_MES_GRACIA, 
+      DKTT_PERIODO_GRACIA 
+    )
+    SELECT
+      ID, DKTT_DT_REG, DKTT_DT_TYP, DKTT_DT_TC, DKTT_DT_SEQ_NUM,
+      DKTT_DT_TRAN_DAT, DKTT_DT_TRAN_TIM, DKTT_DT_INST_RETAILER, DKTT_DT_ID_RETAILER,
+      DKTT_DT_NAME_RETAILER, DKTT_DT_CARD, DKTT_DT_AMT_1, DKTT_DT_AMT_PROPINA, DKTT_TIPO_CUOTA,
+      DKTT_DT_CANTI_CUOTAS, DKTT_DT_RESP_CDE, DKTT_DT_APPRV_CDE, DKTT_DT_TERM_NAME, DKTT_DT_ID_CAJA, 
+      DKTT_DT_NUM_BOLETA, DKTT_DT_AUTH_TRACK2, DKTT_DT_FECHA_VENTA, DKTT_DT_HORA_VENTA, DKTT_DT_FECHA_PAGO, 
+      DKTT_DT_COD_RECHAZO, DKTT_DT_GLOSA_RECHAZO, DKTT_DT_VAL_CUOTA, DKTT_DT_VAL_TASA, DKTT_DT_NUMERO_UNICO, 
+      DKTT_DT_TIPO_MONEDA, DKTT_DT_ID_RETAILER_RE, DKTT_DT_COD_SERVICIO, DKTT_DT_VCI, DKTT_MES_GRACIA, 
+      DKTT_PERIODO_GRACIA
+    FROM CUADRATURA_FILE_TBK
+      WHERE STATUS_SAP_REGISTER = 'ENCONTRADO'
+      AND DKTT_DT_FECHA_VENTA = :fecha
+      AND TIPO_TRANSACCION = 'CCN'`;
+    await conn.execute(moverCreditosSql, { fecha: fecha }, { autoCommit: false });
+
+    const moverDebitosSql = `
+      INSERT INTO CDN_TBK_HISTORICO (
+      ID_CDN, DSK_DT_REG, DSK_TYP, DSK_TC, DSK_TRAN_DAT, DSK_TRAN_TIM, 
+      DSK_ID_RETAILER, DSK_NAME_RETAILER, DSK_CARD, DSK_AMT_1, DSK_AMT_2,
+      DSK_AMT_PROPINA, DSK_RESP_CDE, DSK_APPVR_CDE, DSK_TERMN_NAME, 
+      DSK_ID_CAJA, DSK_NUM_BOLETA, DSK_FECHA_PAGO, DSK_IDENT, DSK_ID_RETAILER_2, 
+      DSK_ID_COD_SERVI, DSK_ID_NRO_UNICO, DSK_PREPAGO
+    )
+    SELECT
+      ID, DKTT_DT_REG, DKTT_DT_TYP, DKTT_DT_TC,DKTT_DT_TRAN_DAT, DKTT_DT_TRAN_TIM,
+      DKTT_DT_ID_RETAILER, DKTT_DT_NAME_RETAILER, DKTT_DT_CARD, DKTT_DT_AMT_1,
+      DSK2_AMT_2, DKTT_DT_AMT_PROPINA, DKTT_DT_RESP_CDE, DKTT_DT_APPRV_CDE,
+      DKTT_DT_TERM_NAME, DKTT_DT_ID_CAJA, DKTT_DT_NUM_BOLETA, DKTT_DT_FECHA_VENTA, 
+      DSK_IDENT, DKTT_DT_ID_RETAILER_RE, DSK_ID_COD_SERVI, DSK_ID_NRO_UNICO, DSK_PREPAGO
+    FROM CUADRATURA_FILE_TBK
+      WHERE STATUS_SAP_REGISTER = 'ENCONTRADO'
+      AND DKTT_DT_FECHA_VENTA = :fecha
+      AND TIPO_TRANSACCION = 'CDN'`;
+    await conn.execute(moverDebitosSql, { fecha: fecha }, { autoCommit: false });
+
+    // Paso 3: Borrar los registros de la tabla temporal
+    const deleteResult = await conn.execute(
+      `DELETE FROM CUADRATURA_FILE_TBK
+        WHERE STATUS_SAP_REGISTER = 'ENCONTRADO'
+          AND DKTT_DT_FECHA_VENTA = :fecha`,
+      { fecha: fecha },
       { autoCommit: false }
     );
 
     await conn.commit();
-    return { ok: true };
+    return { ok: true, cant: cant };
   } catch (e) {
     try {
       await conn.rollback();
@@ -35,4 +98,40 @@ async function enviarATesoreriaSoloSiSinPendientes({ usuarioId, observacion }) {
   }
 }
 
-module.exports = { enviarATesoreriaSoloSiSinPendientes };
+async function existenPendientesAnterioresA({ fecha }) {
+  const conn = await getConnection();
+  try {
+    const estadosPendientes = ['NO EXISTE', 'PENDIENTE', 'ENCONTRADO', 'REPROCESO'];
+
+    const sql = `
+      SELECT DKTT_DT_FECHA_VENTA AS FECHA_MAS_RECIENTE
+      FROM CUADRATURA_FILE_TBK
+      WHERE DKTT_DT_FECHA_VENTA < :fecha
+        AND STATUS_SAP_REGISTER IN (${estadosPendientes.map((_, i) => `:estado${i}`).join(', ')})
+      ORDER BY DKTT_DT_FECHA_VENTA DESC
+      FETCH FIRST 1 ROWS ONLY`;
+
+    const binds = { fecha: fecha };
+    estadosPendientes.forEach((estado, i) => {
+      binds[`estado${i}`] = estado;
+    });
+
+    const result = await conn.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+
+    if (result.rows.length > 0) {
+      return { existen: true, fechaMasReciente: result.rows[0].FECHA_MAS_RECIENTE };
+    } else {
+      return { existen: false, fechaMasReciente: null };
+    }
+  } finally {
+    if (conn) {
+      try {
+        await conn.close();
+      } catch (err) {
+        console.error('Error al cerrar conexión', err);
+      }
+    }
+  }
+}
+
+module.exports = { enviarATesoreriaSoloSiSinPendientes, existenPendientesAnterioresA };
