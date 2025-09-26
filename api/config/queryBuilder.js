@@ -1,98 +1,79 @@
 function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
   const tipoUpper = (tipo || '').toUpperCase();
 
-  const isValid = (col) => `REGEXP_LIKE(TRIM(${col}), '^[0-9]*[1-9][0-9]*$')`;
+  const isValid = (col) => `REGEXP_LIKE(TRIM(l.${col}), '^[0-9]*[1-9][0-9]*$')`;
 
   let where = '';
   let binds = {};
 
   if (tipoUpper === 'LCN') {
-    where = "TIPO_TRANSACCION = 'LCN' AND liq_fpago = :fecha";
+    where = "l.TIPO_TRANSACCION = 'LCN' AND l.liq_fpago = :fecha";
     binds.fecha = startLCN;
   } else if (tipoUpper === 'LDN') {
-    where = "TIPO_TRANSACCION = 'LDN' AND liq_fedi = :fecha";
+    where = "l.TIPO_TRANSACCION = 'LDN' AND l.liq_fedi = :fecha";
     binds.fecha = startLDN;
   } else {
     throw new Error(`Tipo de transacción no soportado: ${tipo}`);
   }
 
-  // CUPON
-  let cuponExpr;
+  let joinClause = '';
   if (tipoUpper === 'LCN') {
-    cuponExpr = `
-      CASE
-        WHEN ${isValid('liq_orpedi')} THEN LTRIM(TRIM(liq_orpedi), '0')
-        ELSE TRIM(liq_codaut)
-      END
+    joinClause = `
+      INNER JOIN CCN_TBK_HISTORICO h ON
+        (
+          ${isValid('liq_orpedi')} AND
+          LTRIM(TRIM(l.liq_orpedi), '0') = h.DKTT_DT_NUMERO_UNICO
+        ) OR
+        (
+          NOT ${isValid('liq_orpedi')} AND
+          TRIM(l.liq_codaut) = h.DKTT_DT_APPRV_CDE -- <<< ¡AQUÍ ESTÁ LA CORRECCIÓN!
+        )
     `;
   } else if (tipoUpper === 'LDN') {
-    cuponExpr = `
-      CASE
-        WHEN ${isValid('liq_nro_unico')} THEN TRIM(liq_nro_unico)
-        ELSE TRIM(liq_appr)
-      END
+    joinClause = `
+      INNER JOIN CDN_TBK_HISTORICO h ON
+        (
+          ${isValid('liq_nro_unico')} AND
+          TRIM(l.liq_nro_unico) = h.DSK_ID_NRO_UNICO
+        ) OR
+        (
+          NOT ${isValid('liq_nro_unico')} AND
+          TRIM(l.liq_appr) = h.DSK_APPVR_CDE
+        )
     `;
-  } else {
-    cuponExpr = `TRIM(COALESCE(liq_nro_unico, liq_orpedi, liq_codaut, liq_appr))`;
   }
 
-  // Cód Autorización
-  let codAutorizacionExpr =
+  // El resto de las expresiones de la función no necesitan cambios...
+  const cuponExpr =
     tipoUpper === 'LCN'
-      ? 'TRIM(liq_codaut)'
-      : tipoUpper === 'LDN'
-        ? 'TRIM(liq_appr)'
-        : 'TRIM(COALESCE(liq_codaut, liq_appr))';
+      ? `CASE WHEN ${isValid('liq_orpedi')} THEN LTRIM(TRIM(l.liq_orpedi), '0') ELSE TRIM(l.liq_codaut) END`
+      : `CASE WHEN ${isValid('liq_nro_unico')} THEN TRIM(l.liq_nro_unico) ELSE TRIM(l.liq_appr) END`;
 
-  // Comercio
-  let comercioExpr =
+  const codAutorizacionExpr = tipoUpper === 'LCN' ? 'TRIM(l.liq_codaut)' : 'TRIM(l.liq_appr)';
+
+  const comercioExpr =
     tipoUpper === 'LCN'
-      ? `
-        CASE
-          WHEN liq_cprin != 99999999 THEN TRIM(liq_cprin)
-          ELSE TRIM(liq_numc)
-        END
-      `
-      : 'TRIM(liq_numc)';
+      ? `CASE WHEN l.liq_cprin != 99999999 THEN TRIM(l.liq_cprin) ELSE TRIM(l.liq_numc) END`
+      : 'TRIM(l.liq_numc)';
 
-  // Comisión y bruto
   const comisionExpr = `
     CASE
-      WHEN TIPO_TRANSACCION = 'LCN' THEN (liq_monto / 100) * 0.0090
-      WHEN TIPO_TRANSACCION = 'LDN' THEN (liq_monto / 100) * 0.0058
+      WHEN l.TIPO_TRANSACCION = 'LCN' THEN (l.liq_monto / 100) * 0.0090
+      WHEN l.TIPO_TRANSACCION = 'LDN' THEN (l.liq_monto / 100) * 0.0058
       ELSE 0
     END
   `;
-
   const montoBrutoExpr = `${comisionExpr} + (${comisionExpr} * 0.19)`;
 
-  // Fecha Abono
   const fechaAbono = `
-    CASE 
-      WHEN TIPO_TRANSACCION = 'LCN' THEN TO_CHAR(TO_DATE(liq_fpago, 'DDMMYYYY'), 'DD/MM/YYYY')
-      WHEN TIPO_TRANSACCION = 'LDN' THEN TO_CHAR(TO_DATE(liq_fedi, 'DD/MM/YY'), 'DD/MM/YYYY')
+    CASE
+      WHEN l.TIPO_TRANSACCION = 'LCN' THEN TO_CHAR(TO_DATE(l.liq_fpago, 'DDMMYYYY'), 'DD/MM/YYYY')
+      WHEN l.TIPO_TRANSACCION = 'LDN' THEN TO_CHAR(TO_DATE(l.liq_fedi, 'DD/MM/YY'), 'DD/MM/YYYY')
       ELSE NULL
     END
   `;
 
-  // Fecha Venta
-  // const fechaVenta = `
-  //   CASE
-  //     WHEN TIPO_TRANSACCION = 'LCN' THEN TO_CHAR(TO_DATE(liq_fcom, 'DDMMYYYY'), 'DD/MM/YYYY')
-  //     WHEN TIPO_TRANSACCION = 'LDN' THEN TO_CHAR(TO_DATE(liq_fcom, 'DD/MM/YY'), 'DD/MM/YYYY')
-  //     ELSE NULL
-  //   END
-  // `;
-
-  const fechaVenta = `
-  TO_CHAR( -- 3. Finalmente, da el formato de salida que quieres 'DD/MM/YYYY'
-    TO_DATE( -- 2. Convierte la cadena de 8 dígitos a una fecha real
-      LPAD(TO_CHAR(liq_fcom), 8, '0'), -- 1. Transforma el NÚMERO a una CADENA de 8 dígitos, rellenando con '0' a la izquierda si es necesario
-      'DDMMYYYY'
-    ),
-    'DD/MM/YYYY'
-  )
-`;
+  const fechaVenta = `TO_CHAR(TO_DATE(LPAD(TO_CHAR(l.liq_fcom), 8, '0'), 'DDMMYYYY'), 'DD/MM/YYYY')`;
 
   const orderBy = `
     ORDER BY
@@ -100,35 +81,34 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
         WHEN REGEXP_LIKE(TRIM(${cuponExpr}), '^[0-9]+$') THEN TO_NUMBER(TRIM(${cuponExpr}))
         ELSE NULL
       END NULLS LAST,
-      date_load_bbdd DESC NULLS LAST
+      l.date_load_bbdd DESC NULLS LAST
   `;
 
-  // SQL final
   const sql = `
     SELECT
       ${fechaAbono}             AS FECHA_ABONO,
       ${comercioExpr}           AS CODIGO_COMERCIO,
       ${cuponExpr}              AS CUPON,
-      TRUNC(liq_monto / 100)    AS TOTAL_ABONADO,
+      TRUNC(l.liq_monto / 100)  AS TOTAL_ABONADO,
       ${comisionExpr}           AS COMISION_NETA,
       ${montoBrutoExpr}         AS COMISION_BRUTA,
       ${fechaVenta}             AS FECHA_VENTA,
-      CASE 
-        WHEN TIPO_TRANSACCION = 'LCN' THEN liq_cuotas
+      CASE
+        WHEN l.TIPO_TRANSACCION = 'LCN' THEN l.liq_cuotas
         ELSE 1
       END AS CUOTA,
-      CASE 
-        WHEN TIPO_TRANSACCION = 'LCN' THEN liq_ntc
+      CASE
+        WHEN l.TIPO_TRANSACCION = 'LCN' THEN l.liq_ntc
         ELSE 1
       END AS TOTAL_CUOTAS,
       ${codAutorizacionExpr}    AS CODIGO_AUTORIZACION
-    FROM liquidacion_file_tbk
+    FROM liquidacion_file_tbk l
+    ${joinClause}
     WHERE
     ${where}
     ${orderBy}
   `;
 
-  //const binds = { tipo: tipoUpper, startLCN, startLDN };
   return { sql, binds };
 }
 

@@ -2,6 +2,7 @@ const {
   getLiquidacion,
   getLiquidacionTotales,
   getLiquidacionExcel,
+  guardarLiquidacionesHistoricas,
 } = require('../services/liquidaciónService');
 const { obtenerRangoDelDiaActual, formatearFechaParaDB } = require('../config/utils');
 
@@ -74,7 +75,46 @@ async function getLiquidacionxls(req, res) {
     res.status(500).json({ error: 'Error al generar Excel' });
   }
 }
+
+const validarLiquidacionController = async (req, res) => {
+  try {
+    // 1. Extraemos los parámetros que envía el frontend desde el cuerpo (body) de la petición
+    const { tipo, fecha, usuarioId } = req.body;
+
+    // 2. Hacemos una validación básica de entrada
+    if (!tipo || !fecha || !usuarioId) {
+      return res.status(400).json({
+        mensaje: 'Petición inválida. Se requiere "tipo", "fecha" y "usuarioId".',
+      });
+    }
+
+    // 3. Llamamos a nuestra función de servicio, que hará todo el trabajo pesado
+    const resultado = await guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId });
+
+    // 4. Si todo sale bien, enviamos una respuesta exitosa al frontend
+    res.status(200).json({
+      mensaje: 'Proceso de validación completado con éxito.',
+      registrosProcesados: resultado.registrosProcesados,
+    });
+  } catch (error) {
+    // 5. Si algo falla en el servicio, capturamos el error aquí
+    console.error('Error en validarLiquidacionController:', error);
+
+    // Enviamos un código de error específico si lo definimos (ej: 404 si no hay datos)
+    if (error.status) {
+      return res.status(error.status).json({ mensaje: error.message });
+    }
+
+    // Para cualquier otro error inesperado, enviamos un 500
+    res.status(500).json({
+      mensaje: 'Error interno del servidor al procesar la validación.',
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getLiquidacionController,
   getLiquidacionxls,
+  validarLiquidacionController,
 };

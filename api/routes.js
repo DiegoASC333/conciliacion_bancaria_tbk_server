@@ -22,6 +22,7 @@ const {
 const {
   getLiquidacionController,
   getLiquidacionxls,
+  validarLiquidacionController,
 } = require('./controllers/liquidacionController.js');
 const {
   getCartolaTesoreriaController,
@@ -51,5 +52,6 @@ router.post('/liquidacion-excel', getLiquidacionxls); //obtener excel de liquida
 router.post('/cartola-excel', getCartolaxls); //obtener excel de cartola
 router.post('/cartola-mock', getDataMock); //obtener data de mock
 router.get('/cuadratura/validacion/fechas-anteriores/:fecha', validarFechasAnteriores); // obtener fechas anteriores a la indicada
+router.post('/validar', validarLiquidacionController);
 
 module.exports = router;
