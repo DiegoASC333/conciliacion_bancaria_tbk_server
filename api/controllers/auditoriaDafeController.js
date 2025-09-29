@@ -5,7 +5,7 @@ const {
 
 const postEnviarTesoreria = async (req, res) => {
   try {
-    const { usuarioId, observacion, fecha, totalDiario } = req.body || {};
+    const { usuarioId, observacion, fecha, totalDiario, perfil } = req.body || {};
 
     if (!usuarioId)
       return res.status(400).json({ success: false, message: 'usuarioId es requerido' });
@@ -17,6 +17,7 @@ const postEnviarTesoreria = async (req, res) => {
       observacion,
       fecha,
       totalDiario,
+      perfil,
     });
     return res.status(200).json({
       success: true,

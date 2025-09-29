@@ -9,10 +9,8 @@ async function getDataCartola({ tipo, start, end }) {
     const { sql, binds } = buildCartolaQuery({ tipo, start, end });
 
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
-    //const binds = { tipo, fecha_ini: start, fecha_fin: end };
     const res = await connection.execute(sql, binds, options);
 
-    // Normalizamos los datos según tus reglas
     const filas = (res.rows || []).map((r) => {
       let cuota = r.CUOTA;
       let cuotas_restantes = r.CUOTAS_RESTANTES;
@@ -22,20 +20,17 @@ async function getDataCartola({ tipo, start, end }) {
 
       if (tipo === 'LCN') {
         if (!total_cuotas || total_cuotas === 0) {
-          // Caso: no hay info de cuotas => venta contado simulada
           cuota = 1;
           total_cuotas = 1;
           cuotas_restantes = 0;
           deuda_pagada = r.MONTO;
           deuda_por_pagar = 0;
         } else {
-          // Caso: hay info real de cuotas => recalculamos bien
           cuotas_restantes = total_cuotas - cuota;
           deuda_pagada = (cuota * r.MONTO) / total_cuotas;
           deuda_por_pagar = r.MONTO - deuda_pagada;
         }
       } else if (tipo === 'LDN') {
-        // débito
         cuota = 1;
         total_cuotas = 1;
         cuotas_restantes = 0;

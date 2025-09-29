@@ -1,16 +1,28 @@
 const { getConnection } = require('../config/utils');
 const oracledb = require('oracledb');
 
-async function enviarATesoreriaSoloSiSinPendientes({ usuarioId, observacion, fecha, totalDiario }) {
+async function enviarATesoreriaSoloSiSinPendientes({
+  usuarioId,
+  observacion,
+  fecha,
+  totalDiario,
+  perfil,
+}) {
   const conn = await getConnection();
 
   try {
-    // Ejemplo simple: contar aprobados por enviar (puedes dejar 0 si quieres ultra-minimal)
+    let perfilCondition = '';
+    if (perfil && perfil.toUpperCase() === 'FICA') {
+      perfilCondition = ` AND centro_costo <> 'SD'`;
+    } else if (perfil && perfil.toUpperCase() === 'SD') {
+      perfilCondition = ` AND centro_costo = 'SD'`;
+    }
+
     const rAprob = await conn.execute(
       `SELECT COUNT(*) AS CANT
          FROM CUADRATURA_FILE_TBK
         WHERE STATUS_SAP_REGISTER = 'ENCONTRADO'
-        AND DKTT_DT_FECHA_VENTA = :fecha`,
+        AND DKTT_DT_FECHA_VENTA = :fecha ${perfilCondition}`,
       { fecha: fecha },
       { outFormat: oracledb.OUT_FORMAT_OBJECT }
     );
@@ -52,7 +64,8 @@ async function enviarATesoreriaSoloSiSinPendientes({ usuarioId, observacion, fec
     FROM CUADRATURA_FILE_TBK
       WHERE STATUS_SAP_REGISTER = 'ENCONTRADO'
       AND DKTT_DT_FECHA_VENTA = :fecha
-      AND TIPO_TRANSACCION = 'CCN'`;
+      AND TIPO_TRANSACCION = 'CCN'
+      ${perfilCondition}`;
     await conn.execute(moverCreditosSql, { fecha: fecha }, { autoCommit: false });
 
     const moverDebitosSql = `
@@ -72,14 +85,15 @@ async function enviarATesoreriaSoloSiSinPendientes({ usuarioId, observacion, fec
     FROM CUADRATURA_FILE_TBK
       WHERE STATUS_SAP_REGISTER = 'ENCONTRADO'
       AND DKTT_DT_FECHA_VENTA = :fecha
-      AND TIPO_TRANSACCION = 'CDN'`;
+      AND TIPO_TRANSACCION = 'CDN'
+      ${perfilCondition}`;
     await conn.execute(moverDebitosSql, { fecha: fecha }, { autoCommit: false });
 
-    // Paso 3: Borrar los registros de la tabla temporal
     const deleteResult = await conn.execute(
       `DELETE FROM CUADRATURA_FILE_TBK
         WHERE STATUS_SAP_REGISTER = 'ENCONTRADO'
-          AND DKTT_DT_FECHA_VENTA = :fecha`,
+          AND DKTT_DT_FECHA_VENTA = :fecha
+           ${perfilCondition}`,
       { fecha: fecha },
       { autoCommit: false }
     );

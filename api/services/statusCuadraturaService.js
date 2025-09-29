@@ -1,10 +1,10 @@
 const { getConnection, parseJSONLob } = require('../config/utils');
 const oracledb = require('oracledb');
 
-async function getStatusDiarioCuadratura({ fecha }) {
+async function getStatusDiarioCuadratura({ fecha, perfil }) {
   const connection = await getConnection();
 
-  const sql = ` SELECT
+  let sql = ` SELECT
     COUNT(*) AS TOTAL_DIARIO,
     SUM(TRUNC(DKTT_DT_AMT_1/100)) AS MONTO_TOTAL_DIARIO,
     SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN 1 ELSE 0 END) AS APROBADOS_DIARIO,
@@ -14,11 +14,21 @@ async function getStatusDiarioCuadratura({ fecha }) {
     SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN 1 ELSE 0 END) AS REPROCESADOS_DIARIO,
     SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_REPROCESADOS
     FROM CUADRATURA_FILE_TBK
-    WHERE DKTT_DT_FECHA_VENTA = :fecha`;
+    WHERE DKTT_DT_FECHA_VENTA = :fecha
+    `;
+
+  let perfilCondition = '';
+  if (perfil && perfil.toUpperCase() === 'FICA') {
+    perfilCondition = ` AND centro_costo <> 'SD'`;
+  } else if (perfil && perfil.toUpperCase() === 'SD') {
+    perfilCondition = ` AND centro_costo = 'SD'`;
+  }
+
+  sql += perfilCondition;
 
   try {
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
-    const binds = { fecha: fecha }; // JS Date -> bind DATE/TIMESTAMP
+    const binds = { fecha: fecha };
 
     const res = await connection.execute(sql, binds, options);
     const r = res.rows?.[0] || {};
@@ -42,7 +52,7 @@ async function getStatusDiarioCuadratura({ fecha }) {
   }
 }
 
-async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransaccion }) {
+async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransaccion, perfil }) {
   const conn = await getConnection();
   try {
     const binds = {};
@@ -54,7 +64,6 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
       conditions.push(`UPPER(NVL(c.STATUS_SAP_REGISTER, '')) IN (${bindNames})`);
     }
 
-    // Filtro por tipo de transacción (NUEVO)
     if (tipoTransaccion) {
       conditions.push(`c.tipo_transaccion = :tipoTransaccion`);
       binds.tipoTransaccion = tipoTransaccion;
@@ -63,6 +72,12 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
     if (fecha) {
       conditions.push(`c.DKTT_DT_FECHA_VENTA = :fecha`);
       binds.fecha = fecha;
+    }
+
+    if (perfil && perfil.toUpperCase() === 'FICA') {
+      conditions.push(`c.centro_costo <> 'SD'`);
+    } else if (perfil && perfil.toUpperCase() === 'SD') {
+      conditions.push(`c.centro_costo = 'SD'`);
     }
 
     const isValid = (col) => `REGEXP_LIKE(TRIM(${col}), '^[0-9]*[1-9][0-9]*$')`;
@@ -84,7 +99,8 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
       END
     `;
 
-    const sql = `SELECT
+    const sql = `
+    SELECT
         ${cuponExpr}                       AS CUPON,
         p.rut AS RUT,
         vec_cob01.pip_obtiene_nombre(p.rut) as NOMBRE, 
@@ -105,7 +121,16 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
           WHEN c.tipo_transaccion = 'CCN' THEN 'Crédito'
           WHEN c.tipo_transaccion = 'CDN' THEN 'Débito'
           ELSE c.tipo_transaccion
-        END AS TIPO_TRANSACCION
+        END AS TIPO_TRANSACCION,
+        CASE
+        WHEN REGEXP_LIKE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), '^[0-9]{8}$')
+          THEN TO_CHAR(TO_DATE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), 'YYYYMMDD'), 'DD/MM/YYYY')
+          ELSE NULL 
+        END AS FECHA_VENCIMIENTO,
+        JSON_VALUE(p.respuesta, '$.data[0].NOMBRE_CARRERA'    NULL ON ERROR) AS NOMBRE_CARRERA,
+        JSON_VALUE(p.respuesta, '$.data[0].CARRERA'           NULL ON ERROR) AS CARRERA,
+        JSON_VALUE(p.respuesta, '$.data[0].TIPO_DOCUMENTO'    NULL ON ERROR) AS TIPO_DOCUMENTO,
+        REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+') AS CODIGO_EXPLICATIVO
       FROM cuadratura_file_tbk c
       LEFT JOIN proceso_cupon p ON TO_CHAR(p.cupon) = ${cuponExpr}
       ${whereClause}
@@ -122,52 +147,21 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
 
     const res = await conn.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
 
-    const filas = await Promise.all(
-      (res.rows || []).map(async (r) => {
-        let fecha_vencimiento = 'No encontrado';
-        let carrera = 'No encontrado';
-        let nombre_carrera = 'No encontrado';
-        let tipo_documento = 'No encontrado';
-
-        if (r.JSON_DATA) {
-          try {
-            let jsonStr;
-
-            // si es un LOB, primero leerlo
-            if (r.JSON_DATA instanceof oracledb.Lob) {
-              jsonStr = await parseJSONLob(r.JSON_DATA);
-            } else {
-              jsonStr = r.JSON_DATA; // si ya es string
-            }
-
-            const obj = JSON.parse(jsonStr);
-            const data = obj.data && typeof obj.data === 'object' ? obj.data : {};
-            fecha_vencimiento = data.FECHA_VENCIMIENTO ?? 'No encontrado';
-            nombre_carrera = data.NOMBRE_CARRERA ?? 'No encontrado';
-            carrera = data.CARRERA ?? 'No encontrado';
-            tipo_documento = data.TIPO_DOCUEMNTO ?? 'No encontrado';
-          } catch (err) {
-            console.error('Error parseando JSON:', r.JSON_DATA, err);
-          }
-        }
-
-        return {
-          RUT: r.RUT,
-          NOMBRE: r.NOMBRE,
-          CUOTAS: r.CUOTAS,
-          CUPON: r.CUPON,
-          FECHA_ABONO: r.FECHA_ABONO,
-          FECHA_VENTA: r.FECHA_VENTA,
-          MONTO_TRANSACCION: r.MONTO_TRANSACCION,
-          // Campos extraídos del JSON
-          fecha_vencimiento,
-          nombre_carrera,
-          carrera,
-          tipo_documento,
-          TIPO_TRANSACCION: r.TIPO_TRANSACCION,
-        };
-      })
-    );
+    const filas = (res.rows || []).map((r) => ({
+      RUT: r.RUT,
+      NOMBRE: r.NOMBRE,
+      CUOTAS: r.CUOTAS,
+      CUPON: r.CUPON,
+      FECHA_ABONO: r.FECHA_ABONO,
+      FECHA_VENTA: r.FECHA_VENTA,
+      MONTO_TRANSACCION: r.MONTO_TRANSACCION,
+      TIPO_TRANSACCION: r.TIPO_TRANSACCION,
+      fecha_vencimiento: r.FECHA_VENCIMIENTO ?? 'No encontrado',
+      nombre_carrera: r.NOMBRE_CARRERA ?? 'No encontrado',
+      carrera: r.CARRERA ?? 'No encontrado',
+      tipo_documento: r.TIPO_DOCUMENTO ?? 'No encontrado',
+      clase_documento: r.CODIGO_EXPLICATIVO ?? 'No encontrado',
+    }));
 
     return filas;
     //return res.rows || [];

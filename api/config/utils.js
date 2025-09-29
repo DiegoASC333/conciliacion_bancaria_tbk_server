@@ -7,7 +7,7 @@ const os = require('os');
 const path = require('path');
 const ExcelJS = require('exceljs');
 // Inicializar modo Thick (esto habilita compatibilidad con versiones antiguas)
-oracledb.initOracleClient({ libDir: '/opt/oracle' }); // Cambia según tu sistema
+//oracledb.initOracleClient({ libDir: '/opt/oracle' }); // Cambia según tu sistema
 
 // Fuerza THICK explícitamente y apunta al Instant Client
 

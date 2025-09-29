@@ -71,20 +71,18 @@ async function getLiquidacionTotales({ tipo, startLCN, startLDN }) {
   }
 }
 
-async function getLiquidacionExcel({ tipo, start, end }, res) {
+async function getLiquidacionExcel({ tipo, startLCN, startLDN }, res) {
   let connection;
 
   try {
     connection = await getConnection();
 
-    // Construir query dinámica
-    const { sql, binds } = buildLiquidacionQuery({ tipo, start, end });
+    const { sql, binds } = buildLiquidacionQuery({ tipo, startLCN, startLDN });
 
     const result = await connection.execute(sql, binds, {
       outFormat: oracledb.OUT_FORMAT_OBJECT,
     });
 
-    // Llamar al utils para exportar Excel
     await exportToExcel(result.rows, res, `liquidaciones_${tipo}.xlsx`);
   } catch (err) {
     console.error('Error exportando Excel:', err);
@@ -104,7 +102,6 @@ async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
   const connection = await getConnection();
   const tipoUpper = tipo.toUpperCase();
 
-  // Paso 1 y 2: Construir la cláusula WHERE (esto no cambia, es correcto)
   const [yyyy, mm, dd] = fecha.split('-');
   const fechaPago_LCN = `${dd}${mm}${yyyy}`;
   const fechaEdi_LDN = `${dd}/${mm}/${yyyy.slice(2)}`;
@@ -137,9 +134,6 @@ async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
   }
 
   try {
-    //await connection.beginTransaction();
-
-    // Paso 3 y 4: Contar y registrar en LOG (esto no cambia, es correcto)
     const countSql = `SELECT COUNT(*) AS CANT FROM LIQUIDACION_FILE_TBK l ${whereClause}`;
     const countResult = await connection.execute(countSql, binds, {
       outFormat: oracledb.OUT_FORMAT_OBJECT,
@@ -160,8 +154,6 @@ async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
       { autoCommit: false }
     );
 
-    // --- PASO 5 CORREGIDO ---
-    // Ahora definimos una consulta de inserción específica para cada caso
     let moverDatosSql = '';
 
     if (tipoUpper === 'LCN') {
@@ -204,9 +196,8 @@ async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
 
     const moveResult = await connection.execute(moverDatosSql, binds, { autoCommit: false });
 
-    // Paso 6: Borrar los registros (esto no cambia, es correcto)
-    // const deleteSql = `DELETE FROM LIQUIDACION_FILE_TBK l ${whereClause}`;
-    // await connection.execute(deleteSql, binds, { autoCommit: false });
+    const deleteSql = `DELETE FROM LIQUIDACION_FILE_TBK l ${whereClause}`;
+    await connection.execute(deleteSql, binds, { autoCommit: false });
 
     await connection.commit();
     return { ok: true, registrosProcesados: moveResult.rowsAffected };

@@ -4,8 +4,8 @@ const { getStatusDiarioCuadratura, listarPorTipo } = require('../services/status
 const getStatusCuadratura = async (req, res) => {
   try {
     //const { start, end } = obtenerRangoDelDiaActual();
-    const { fecha } = req.params;
-    const status = await getStatusDiarioCuadratura({ fecha });
+    const { fecha, perfil } = req.params;
+    const status = await getStatusDiarioCuadratura({ fecha, perfil });
 
     return res.status(200).json({
       success: true,
@@ -32,7 +32,7 @@ const listarporTipo = async (req, res) => {
   };
 
   try {
-    const { fecha, tipo, tipoTransaccion } = req.params;
+    const { fecha, tipo, tipoTransaccion, perfil } = req.params;
     const clave = (tipo || '').toLowerCase();
 
     if (!(clave in tipo_flag)) {
@@ -49,6 +49,7 @@ const listarporTipo = async (req, res) => {
       estados: estados,
       tipoTransaccion: tipoTransaccion ? tipoTransaccion.toUpperCase() : null,
       fecha: fecha,
+      perfil: perfil,
     };
 
     const data = await listarPorTipo(params);
