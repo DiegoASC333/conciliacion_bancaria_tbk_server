@@ -4,51 +4,72 @@ const oracledb = require('oracledb');
 async function getStatusDiarioCuadratura({ fecha, perfil }) {
   const connection = await getConnection();
 
-  let sql = ` SELECT
-    COUNT(*) AS TOTAL_DIARIO,
-    SUM(TRUNC(DKTT_DT_AMT_1/100)) AS MONTO_TOTAL_DIARIO,
-    SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN 1 ELSE 0 END) AS APROBADOS_DIARIO,
-    SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_APROBADOS,
-    SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE') THEN 1 ELSE 0 END) AS RECHAZADOS_DIARIO,
-    SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE') THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_RECHAZADOS,
-    SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN 1 ELSE 0 END) AS REPROCESADOS_DIARIO,
-    SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_REPROCESADOS
-    FROM CUADRATURA_FILE_TBK
-    WHERE DKTT_DT_FECHA_VENTA = :fecha
-    `;
-
+  // --- Lógica de la Condición de Perfil (sólo para aprobados) ---
   let perfilCondition = '';
-  if (perfil && perfil.toUpperCase() === 'FICA') {
-    perfilCondition = ` AND centro_costo <> 'SD'`;
-  } else if (perfil && perfil.toUpperCase() === 'SD') {
-    perfilCondition = ` AND centro_costo = 'SD'`;
+  // Si no se especifica un perfil, la condición queda vacía y se obtienen todos.
+  if (perfil) {
+    if (perfil.toUpperCase() === 'FICA') {
+      perfilCondition = ` AND centro_costo <> 'SD'`;
+    } else if (perfil.toUpperCase() === 'SD') {
+      perfilCondition = ` AND centro_costo = 'SD'`;
+    }
   }
 
-  sql += perfilCondition;
+  const sqlAprobados = `
+    SELECT
+      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN 1 ELSE 0 END) AS APROBADOS_DIARIO,
+      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_APROBADOS
+    FROM CUADRATURA_FILE_TBK
+    WHERE DKTT_DT_FECHA_VENTA = :fecha
+    ${perfilCondition}  -- La condición del perfil se aplica AQUÍ
+  `;
+
+  const sqlOtros = `
+    SELECT
+      COUNT(*) AS TOTAL_DIARIO,
+      SUM(TRUNC(DKTT_DT_AMT_1/100)) AS MONTO_TOTAL_DIARIO,
+      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE') THEN 1 ELSE 0 END) AS RECHAZADOS_DIARIO,
+      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE') THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_RECHAZADOS,
+      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN 1 ELSE 0 END) AS REPROCESADOS_DIARIO,
+      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_REPROCESADOS
+    FROM CUADRATURA_FILE_TBK
+    WHERE DKTT_DT_FECHA_VENTA = :fecha
+    -- Nótese la ausencia de la condición de perfil aquí
+  `;
 
   try {
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
     const binds = { fecha: fecha };
 
-    const res = await connection.execute(sql, binds, options);
-    const r = res.rows?.[0] || {};
+    const [resAprobados, resOtros] = await Promise.all([
+      connection.execute(sqlAprobados, binds, options),
+      connection.execute(sqlOtros, binds, options),
+    ]);
+
+    const rAprobados = resAprobados.rows?.[0] || {};
+    const rOtros = resOtros.rows?.[0] || {};
 
     return {
-      total_diario: Number(r.TOTAL_DIARIO || 0),
-      monto_total_diario: Number(r.MONTO_TOTAL_DIARIO || 0),
-      aprobados_diario: Number(r.APROBADOS_DIARIO || 0),
-      monto_aprobados: Number(r.MONTO_APROBADOS || 0),
-      rechazados_diario: Number(r.RECHAZADOS_DIARIO || 0),
-      monto_rechazados: Number(r.MONTO_RECHAZADOS || 0),
-      reprocesados_diario: Number(r.REPROCESADOS_DIARIO || 0),
-      monto_reprocesados: Number(r.MONTO_REPROCESADOS || 0),
+      total_diario: Number(rOtros.TOTAL_DIARIO || 0),
+      monto_total_diario: Number(rOtros.MONTO_TOTAL_DIARIO || 0),
+
+      aprobados_diario: Number(rAprobados.APROBADOS_DIARIO || 0),
+      monto_aprobados: Number(rAprobados.MONTO_APROBADOS || 0),
+
+      rechazados_diario: Number(rOtros.RECHAZADOS_DIARIO || 0),
+      monto_rechazados: Number(rOtros.MONTO_RECHAZADOS || 0),
+      reprocesados_diario: Number(rOtros.REPROCESADOS_DIARIO || 0),
+      monto_reprocesados: Number(rOtros.MONTO_REPROCESADOS || 0),
     };
   } catch (error) {
     console.error('error', error);
+    throw error;
   } finally {
     try {
       if (connection) await connection.close();
-    } catch (_) {}
+    } catch (err) {
+      console.error('Error al cerrar la conexión:', err);
+    }
   }
 }
 
@@ -74,11 +95,34 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
       binds.fecha = fecha;
     }
 
+    // --- INICIO DE LA MODIFICACIÓN ---
+
+    // 1. Define qué estados deben ser filtrados por perfil.
+    //    En tu caso, solo 'ENCONTRADO' (los aprobados).
+    const estadosQueAplicanFiltroPerfil = ['ENCONTRADO'];
+
+    // 2. Comprueba si la búsqueda actual es para "aprobados".
+    //    Esto es verdad si el array 'estados' existe y TODOS sus elementos están en nuestra lista de filtros.
+    const esBusquedaDeAprobados =
+      Array.isArray(estados) &&
+      estados.length > 0 &&
+      estados.every((e) => estadosQueAplicanFiltroPerfil.includes(String(e).toUpperCase()));
+
+    // 3. Aplica la condición de perfil SÓLO si es una búsqueda de aprobados y se proporcionó un perfil.
+    if (esBusquedaDeAprobados && perfil) {
+      if (perfil.toUpperCase() === 'FICA') {
+        conditions.push(`c.centro_costo <> 'SD'`);
+      } else if (perfil.toUpperCase() === 'SD') {
+        conditions.push(`c.centro_costo = 'SD'`);
+      }
+    }
+
+    /*
     if (perfil && perfil.toUpperCase() === 'FICA') {
       conditions.push(`c.centro_costo <> 'SD'`);
     } else if (perfil && perfil.toUpperCase() === 'SD') {
       conditions.push(`c.centro_costo = 'SD'`);
-    }
+    }*/
 
     const isValid = (col) => `REGEXP_LIKE(TRIM(${col}), '^[0-9]*[1-9][0-9]*$')`;
 
@@ -101,6 +145,7 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
 
     const sql = `
     SELECT
+        c.id as ID, 
         ${cuponExpr}                       AS CUPON,
         p.rut AS RUT,
         vec_cob01.pip_obtiene_nombre(p.rut) as NOMBRE, 
@@ -148,6 +193,7 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
     const res = await conn.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
 
     const filas = (res.rows || []).map((r) => ({
+      ID: r.ID,
       RUT: r.RUT,
       NOMBRE: r.NOMBRE,
       CUOTAS: r.CUOTAS,
