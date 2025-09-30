@@ -119,7 +119,8 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
         WHEN l.TIPO_TRANSACCION = 'LCN' THEN l.liq_ntc
         ELSE 1
       END AS TOTAL_CUOTAS,
-      ${codAutorizacionExpr}    AS CODIGO_AUTORIZACION
+      ${codAutorizacionExpr}    AS CODIGO_AUTORIZACION,
+      NVL(h.tipo_documento, 'Sin Documento') as TIPO_DOCUMENTO
     FROM liquidacion_file_tbk l
     ${joinClause}
     WHERE
@@ -136,49 +137,42 @@ function buildCartolaQuery({ tipo, start, end }) {
 
   if (tipo === 'LCN') {
     sql = `
-      -- Consulta para transacciones de Crédito (LCN)
       SELECT
         TO_NUMBER(TRIM(liq.liq_orpedi)) AS cupon,
         liq.liq_fcom AS fecha_venta,
         wt.orden_compra AS rut,
         TRUNC(liq.liq_monto/100) AS monto,
-        liq.liq_cuotas AS cuota,
-        liq.liq_ntc AS total_cuotas,
-        NVL(liq.liq_ntc, 0) - NVL(liq.liq_cuotas, 0) AS cuotas_restantes,
-        -- La lógica de deuda se mantiene según tu especificación
-        CASE WHEN NVL(liq.liq_cuotas,0) > 0
-            THEN (liq.liq_monto / 100) / liq.liq_cuotas
-            ELSE NULL
-        END AS deuda_pagada,
-        (NVL(liq.liq_ntc,0) - NVL(liq.liq_cuotas,0)) * (NVL(liq.liq_monto,0) / 100) AS deuda_por_pagar,
+        liq.liq_cuotas AS cuota,          
+        liq.liq_ntc AS total_cuotas,      
         liq.liq_fpago AS fecha_abono,
-        liq.liq_nombre_banco AS nombre_banco
-      FROM LCN_TBK_HISTORICO liq -- <<< CAMBIO DE TABLA
+        liq.liq_nombre_banco AS nombre_banco,
+        REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+') AS TIPO_DOCUMENTO ---CAMBIO AQUI DS
+      FROM LCN_TBK_HISTORICO liq
       JOIN (
-        SELECT *
+        SELECT id_sesion, orden_compra
         FROM vec_cob02.webpay_trasaccion
         WHERE REGEXP_LIKE(TRIM(id_sesion), '^\\d+$')
       ) wt
         ON TO_NUMBER(TRIM(liq.liq_orpedi)) = TO_NUMBER(TRIM(wt.id_sesion))
+      JOIN  proceso_cupon p ON TO_NUMBER(TRIM(liq.liq_orpedi)) = p.cupon --CAMBIO AQUI DS 
       WHERE REGEXP_LIKE(TRIM(liq.liq_orpedi), '^\\d+$')
         AND REGEXP_LIKE(TRIM(liq.liq_fpago), '^\\d{8}$')
-        AND TO_DATE(TRIM(liq.liq_fpago), 'DDMMYYYY') -- Formato para LCN
+        AND TO_DATE(TRIM(liq.liq_fpago), 'DDMMYYYY')
             BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
                 AND TO_DATE(:fecha_fin, 'DDMMYYYY')
     `;
   } else if (tipo === 'LDN') {
     sql = `
-      -- Consulta para transacciones de Débito (LDN)
       SELECT
         liq.liq_nro_unico AS cupon, -- <<< NUEVA COLUMNA
         liq.liq_fcom AS fecha_venta,
         wt.orden_compra AS rut, -- <<< Se mantiene JOIN para obtener el RUT
-        TRUNC(liq.liq_amt1/100) AS monto, -- <<< NUEVA COLUMNA
+        TRUNC(liq.liq_amt_1/100) AS monto, -- <<< NUEVA COLUMNA
         -- Lógica de cuotas no aplica para LDN, se colocan valores fijos
         1 AS cuota,
         1 AS total_cuotas,
         0 AS cuotas_restantes,
-        TRUNC(liq.liq_amt1/100) AS deuda_pagada,
+        TRUNC(liq.liq_amt_1/100) AS deuda_pagada,
         0 AS deuda_por_pagar,
         liq.liq_fedi AS fecha_abono, -- <<< NUEVA COLUMNA
         NULL AS nombre_banco -- No se especificó banco para LDN
@@ -188,8 +182,9 @@ function buildCartolaQuery({ tipo, start, end }) {
         FROM vec_cob02.webpay_trasaccion
         WHERE REGEXP_LIKE(TRIM(id_sesion), '^\\d+$')
       ) wt
-        ON TO_NUMBER(TRIM(liq.liq_orpedi)) = TO_NUMBER(TRIM(wt.id_sesion)) -- <<< IMPORTANTE: Se asume que liq_orpedi existe en LDN para el JOIN
-      WHERE REGEXP_LIKE(TRIM(liq.liq_orpedi), '^\\d+$')
+        ON TO_NUMBER(TRIM(liq.liq_nro_unico)) = TO_NUMBER(TRIM(wt.id_sesion)) -- <<< IMPORTANTE: Se asume que liq_orpedi existe en LDN para el JOIN
+      LEFT JOIN proceso_cupon p ON TO_NUMBER(TRIM(liq.liq_nro_unico)) = TO_NUMBER(TRIM(p.id_cuadratura))
+      WHERE REGEXP_LIKE(TRIM(liq.liq_nro_unico), '^\\d+$')
         AND TO_DATE(TRIM(liq.liq_fedi), 'DD/MM/YY') -- <<< NUEVA COLUMNA Y FORMATO
             BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
                 AND TO_DATE(:fecha_fin, 'DDMMYYYY')
