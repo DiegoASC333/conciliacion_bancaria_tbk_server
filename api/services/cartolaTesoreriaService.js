@@ -6,51 +6,42 @@ async function getDataCartola({ tipo, start, end }) {
   const connection = await getConnection();
 
   try {
+    // buildCartolaQuery ahora es inteligente y devuelve la query correcta
     const { sql, binds } = buildCartolaQuery({ tipo, start, end });
 
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
     const res = await connection.execute(sql, binds, options);
 
     const filas = (res.rows || []).map((r) => {
-      let cuota = r.CUOTA;
-      let cuotas_restantes = r.CUOTAS_RESTANTES;
-      let total_cuotas = r.TOTAL_CUOTAS;
-      let deuda_pagada = r.DEUDA_PAGADA;
-      let deuda_por_pagar = r.DEUDA_POR_PAGAR;
-
       if (tipo === 'LCN') {
+        let { cuota, cuotas_restantes, total_cuotas, deuda_pagada, deuda_por_pagar } = r;
         if (!total_cuotas || total_cuotas === 0) {
-          cuota = 1;
-          total_cuotas = 1;
-          cuotas_restantes = 0;
-          deuda_pagada = r.MONTO;
-          deuda_por_pagar = 0;
+          return {
+            ...r,
+            CUOTA: 1,
+            TOTAL_CUOTAS: 1,
+            CUOTAS_RESTANTES: 0,
+            DEUDA_PAGADA: r.MONTO,
+            DEUDA_POR_PAGAR: 0,
+          };
         } else {
           cuotas_restantes = total_cuotas - cuota;
           deuda_pagada = (cuota * r.MONTO) / total_cuotas;
           deuda_por_pagar = r.MONTO - deuda_pagada;
+          return {
+            ...r,
+            CUOTAS_RESTANTES: cuotas_restantes,
+            DEUDA_PAGADA: deuda_pagada,
+            DEUDA_POR_PAGAR: deuda_por_pagar,
+          };
         }
-      } else if (tipo === 'LDN') {
-        cuota = 1;
-        total_cuotas = 1;
-        cuotas_restantes = 0;
-        deuda_pagada = r.MONTO;
-        deuda_por_pagar = 0;
       }
-
-      return {
-        ...r,
-        CUOTA: cuota,
-        TOTAL_CUOTAS: total_cuotas,
-        CUOTAS_RESTANTES: cuotas_restantes,
-        DEUDA_PAGADA: deuda_pagada,
-        DEUDA_POR_PAGAR: deuda_por_pagar,
-      };
+      return r;
     });
 
     return filas;
   } catch (error) {
-    console.error('error', error);
+    console.error('error en getDataCartola', error);
     throw error;
   } finally {
     try {
@@ -61,43 +52,51 @@ async function getDataCartola({ tipo, start, end }) {
 
 const getTotalesWebpay = async ({ tipo, start, end }) => {
   const connection = await getConnection();
-  const sql = `
-    SELECT
-      SUM(liq.liq_monto / 100) AS saldo_estimado,
-      SUM(
-        (NVL(liq.liq_ntc,0) - NVL(liq.liq_cuotas,0)) * (NVL(liq.liq_monto,0) / 100)
-      ) AS saldo_por_cobrar
-    FROM (
-      SELECT *
-      FROM vec_cob04.liquidacion_file_tbk
-      WHERE REGEXP_LIKE(TRIM(liq_orpedi), '^\\d+$')
-        AND REGEXP_LIKE(TRIM(liq_fpago), '^\\d{8}$')
-    ) liq
-    JOIN (
-      SELECT *
-      FROM vec_cob02.webpay_trasaccion
-      WHERE REGEXP_LIKE(TRIM(id_sesion), '^\\d+$')
-    ) wt
-      ON TO_NUMBER(TRIM(liq.liq_orpedi)) = TO_NUMBER(TRIM(wt.id_sesion))
-    WHERE
-      liq.tipo_transaccion = :tipo
-      AND TO_DATE(TRIM(liq.liq_fpago), 'DDMMYYYY')
-          BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
-              AND TO_DATE(:fecha_fin, 'DDMMYYYY')
-  `;
+  let sql;
+
+  if (tipo === 'LCN') {
+    sql = `
+      SELECT
+        SUM(liq.liq_monto / 100) AS saldo_estimado,
+        SUM(
+          (NVL(liq.liq_ntc,0) - NVL(liq.liq_cuotas,0)) * (NVL(liq.liq_monto,0) / 100)
+        ) AS saldo_por_cobrar
+      FROM LCN_TBK_HISTORICO liq -- <<< CAMBIO DE TABLA
+      JOIN vec_cob02.webpay_trasaccion wt
+        ON TO_NUMBER(TRIM(liq.liq_orpedi)) = TO_NUMBER(TRIM(wt.id_sesion))
+      WHERE REGEXP_LIKE(TRIM(liq.liq_orpedi), '^\\d+$')
+        AND REGEXP_LIKE(TRIM(liq.liq_fpago), '^\\d{8}$')
+        AND TO_DATE(TRIM(liq.liq_fpago), 'DDMMYYYY')
+            BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
+                AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+    `;
+  } else if (tipo === 'LDN') {
+    sql = `
+      SELECT
+        SUM(liq.liq_amt1 / 100) AS saldo_estimado, -- <<< NUEVA COLUMNA
+        0 AS saldo_por_cobrar -- Para débito, el saldo por cobrar es siempre 0
+      FROM LDN_TBK_HISTORICO liq -- <<< CAMBIO DE TABLA
+      JOIN vec_cob02.webpay_trasaccion wt
+        ON TO_NUMBER(TRIM(liq.liq_orpedi)) = TO_NUMBER(TRIM(wt.id_sesion)) -- <<< Se asume liq_orpedi existe para el JOIN
+      WHERE REGEXP_LIKE(TRIM(liq.liq_orpedi), '^\\d+$')
+        AND TO_DATE(TRIM(liq.liq_fedi), 'DD/MM/YY') -- <<< NUEVA COLUMNA Y FORMATO
+            BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
+                AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+    `;
+  } else {
+    return [{ saldo_estimado: 0, saldo_por_cobrar: 0 }];
+  }
+
   try {
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
-    // IMPORTANTE: los nombres del objeto deben coincidir con los placeholders del SQL
     const binds = {
-      tipo,
-      fecha_ini: start, // '06012025'
-      fecha_fin: end, // '07012025'
+      fecha_ini: start,
+      fecha_fin: end,
     };
-
     const res = await connection.execute(sql, binds, options);
-    return res.rows || [];
+    return res.rows.length > 0 ? res.rows : [{ saldo_estimado: 0, saldo_por_cobrar: 0 }];
   } catch (error) {
-    console.error('error', error);
+    console.error('error en getTotalesWebpay', error);
     throw error;
   } finally {
     try {

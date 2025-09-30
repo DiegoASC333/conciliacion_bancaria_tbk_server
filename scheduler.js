@@ -14,14 +14,20 @@ async function runJob() {
   }
 
   running = true;
-  console.log(new Date().toISOString(), 'Iniciando job...');
 
   try {
+    const hoy = new Date();
+    const manana = new Date(hoy);
+    manana.setDate(hoy.getDate() + 1);
+
+    const fechaInicio = hoy.toISOString().split('T')[0];
+    const fechaFin = manana.toISOString().split('T')[0];
+
     const res = await axios.post(
       API_URL,
       {
-        fechaInicio: '2025-01-09', // <- valor fijo para pruebas
-        fechaFin: '2025-01-10',
+        fechaInicio: fechaInicio,
+        fechaFin: fechaFin,
       },
       { timeout: 30 * 60 * 1000 }
     );
@@ -31,11 +37,9 @@ async function runJob() {
   } finally {
     running = false;
   }
-  // Programa a las 06:00 todos los días (hora de Chile)
-  // cron.schedule('0 6 * * *', runJob, { timezone: TZ });
-
-  console.log('Scheduler iniciado. Zona horaria:', TZ);
 }
 
+cron.schedule('0 6 * * *', runJob, { timezone: TZ });
+
 // (Opcional) Descomenta para probar de inmediato sin esperar a las 06:00
-runJob();
+//runJob();

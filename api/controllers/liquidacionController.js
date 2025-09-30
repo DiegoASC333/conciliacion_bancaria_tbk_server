@@ -3,8 +3,8 @@ const {
   getLiquidacionTotales,
   getLiquidacionExcel,
   guardarLiquidacionesHistoricas,
+  findLatestPendingDate,
 } = require('../services/liquidaciónService');
-const { obtenerRangoDelDiaActual, formatearFechaParaDB } = require('../config/utils');
 
 const getLiquidacionController = async (req, res) => {
   try {
@@ -12,6 +12,23 @@ const getLiquidacionController = async (req, res) => {
 
     if (!fecha) {
       return res.status(400).json({ mensaje: 'Fecha no proporcionada.' });
+    }
+
+    let advertencia = null;
+    const pendingDate = await findLatestPendingDate({ tipo, fecha });
+
+    if (pendingDate) {
+      const formattedPendingDate = pendingDate.toISOString().split('T')[0];
+      const mensaje = `Existen liquidaciones pendientes en la fecha ${formattedPendingDate}. Debe procesar esa fecha antes de continuar con ${fecha}.`;
+
+      return res.status(409).json({
+        success: false,
+        status: 409,
+        mensaje,
+        data: {
+          fecha_pendiente: formattedPendingDate,
+        },
+      });
     }
 
     let startLCN = null;

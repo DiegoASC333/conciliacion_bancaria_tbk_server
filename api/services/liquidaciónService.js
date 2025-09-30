@@ -71,6 +71,45 @@ async function getLiquidacionTotales({ tipo, startLCN, startLDN }) {
   }
 }
 
+async function findLatestPendingDate({ tipo, fecha }) {
+  const connection = await getConnection();
+  const tipoUpper = (tipo || '').toUpperCase();
+
+  let sql;
+
+  if (tipoUpper === 'LCN') {
+    sql = `
+      SELECT MAX(TO_DATE(liq_fpago, 'DDMMYYYY')) AS LATEST_DATE
+      FROM liquidacion_file_tbk
+      WHERE TIPO_TRANSACCION = 'LCN'
+        AND REGEXP_LIKE(TRIM(liq_fpago), '^[0-9]{8}$')
+        AND TO_DATE(liq_fpago, 'DDMMYYYY') < TO_DATE(:fecha, 'YYYY-MM-DD')
+    `;
+  } else if (tipoUpper === 'LDN') {
+    sql = `
+      SELECT MAX(TO_DATE(liq_fedi, 'DD/MM/RR')) AS LATEST_DATE
+      FROM liquidacion_file_tbk
+      WHERE TIPO_TRANSACCION = 'LDN'
+        AND REGEXP_LIKE(TRIM(liq_fedi), '^[0-9]{2}/[0-9]{2}/[0-9]{2}$')
+        AND TO_DATE(liq_fedi, 'DD/MM/RR') < TO_DATE(:fecha, 'YYYY-MM-DD')
+    `;
+  } else {
+    return null;
+  }
+
+  try {
+    const res = await connection.execute(sql, { fecha }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    if (res.rows && res.rows.length > 0) {
+      return res.rows[0].LATEST_DATE;
+    }
+    return null;
+  } finally {
+    try {
+      await connection.close();
+    } catch {}
+  }
+}
+
 async function getLiquidacionExcel({ tipo, startLCN, startLDN }, res) {
   let connection;
 
@@ -109,14 +148,18 @@ async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
   let whereClause = '';
   let binds = {};
 
+  const isValid = (col) => `REGEXP_LIKE(TRIM(l.${col}), '^[0-9]*[1-9][0-9]*$')`;
+
   if (tipoUpper === 'LCN') {
     whereClause = `
       WHERE l.TIPO_TRANSACCION = :tipo 
       AND l.liq_fpago = :fechaParam
       AND EXISTS (
           SELECT 1 FROM CCN_TBK_HISTORICO h
-          WHERE (REGEXP_LIKE(TRIM(l.liq_orpedi), '^[0-9]*[1-9][0-9]*$') AND LTRIM(TRIM(l.liq_orpedi), '0') = h.DKTT_DT_NUMERO_UNICO)
-          OR (NOT REGEXP_LIKE(TRIM(l.liq_orpedi), '^[0-9]*[1-9][0-9]*$') AND TRIM(l.liq_codaut) = h.DKTT_DT_APPRV_CDE)
+          WHERE 
+            (${isValid('liq_orpedi')} AND LTRIM(TRIM(l.liq_orpedi), '0') = LTRIM(TRIM(h.DKTT_DT_NUMERO_UNICO), '0'))
+            OR 
+            (NOT ${isValid('liq_orpedi')} AND TRIM(l.liq_codaut) = h.DKTT_DT_APPRV_CDE)
       )`;
     binds = { tipo: tipoUpper, fechaParam: fechaPago_LCN };
   } else if (tipoUpper === 'LDN') {
@@ -125,8 +168,10 @@ async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
       AND l.liq_fedi = :fechaParam
       AND EXISTS (
           SELECT 1 FROM CDN_TBK_HISTORICO h
-          WHERE (REGEXP_LIKE(TRIM(l.liq_nro_unico), '^[0-9]*[1-9][0-9]*$') AND TRIM(l.liq_nro_unico) = h.DSK_ID_NRO_UNICO)
-          OR (NOT REGEXP_LIKE(TRIM(l.liq_nro_unico), '^[0-9]*[1-9][0-9]*$') AND TRIM(l.liq_appr) = h.DSK_APPVR_CDE)
+          WHERE 
+            (${isValid('liq_nro_unico')} AND LTRIM(TRIM(l.liq_nro_unico), '0') = LTRIM(TRIM(h.DSK_ID_NRO_UNICO), '0'))
+            OR 
+            (NOT ${isValid('liq_nro_unico')} AND TRIM(l.liq_appr) = h.DSK_APPVR_CDE)
       )`;
     binds = { tipo: tipoUpper, fechaParam: fechaEdi_LDN };
   } else {
@@ -222,4 +267,5 @@ module.exports = {
   getLiquidacionTotales,
   getLiquidacionExcel,
   guardarLiquidacionesHistoricas,
+  findLatestPendingDate,
 };
