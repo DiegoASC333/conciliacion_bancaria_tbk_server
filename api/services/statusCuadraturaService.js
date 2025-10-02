@@ -12,6 +12,8 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
       perfilCondition = ` AND centro_costo <> 'SD'`;
     } else if (perfil.toUpperCase() === 'SD') {
       perfilCondition = ` AND centro_costo = 'SD'`;
+    } else {
+      perfilCondition = ''; // Si el perfil no es reconocido, no se aplica filtro.
     }
   }
 
@@ -116,13 +118,6 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
         conditions.push(`c.centro_costo = 'SD'`);
       }
     }
-
-    /*
-    if (perfil && perfil.toUpperCase() === 'FICA') {
-      conditions.push(`c.centro_costo <> 'SD'`);
-    } else if (perfil && perfil.toUpperCase() === 'SD') {
-      conditions.push(`c.centro_costo = 'SD'`);
-    }*/
 
     const isValid = (col) => `REGEXP_LIKE(TRIM(${col}), '^[0-9]*[1-9][0-9]*$')`;
 
