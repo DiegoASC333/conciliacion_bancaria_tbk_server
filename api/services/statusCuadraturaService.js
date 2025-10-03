@@ -20,6 +20,7 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
       SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_APROBADOS
     FROM CUADRATURA_FILE_TBK
     WHERE DKTT_DT_FECHA_VENTA = :fecha
+    AND DKTT_DT_ID_RETAILER NOT IN (597048211418,28208820, 48211418,597028208820)
     ${perfilCondition}  -- La condición del perfil se aplica AQUÍ
   `;
 
@@ -33,7 +34,7 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
       SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_REPROCESADOS
     FROM CUADRATURA_FILE_TBK
     WHERE DKTT_DT_FECHA_VENTA = :fecha
-    -- Nótese la ausencia de la condición de perfil aquí
+    AND DKTT_DT_ID_RETAILER NOT IN (597048211418,28208820, 48211418,597028208820)
   `;
 
   try {
@@ -112,6 +113,8 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
         `( ${isValid('c.DKTT_DT_NUMERO_UNICO')} OR ${isValid('c.DSK_ID_NRO_UNICO')} OR TRIM(c.DKTT_DT_APPRV_CDE) IS NOT NULL )`
       );
     }
+
+    conditions.push(`DKTT_DT_ID_RETAILER NOT IN (597048211418,28208820, 48211418,597028208820)`);
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
