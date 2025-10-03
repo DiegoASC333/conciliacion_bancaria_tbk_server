@@ -30,7 +30,7 @@ const {
   getCartolaxls,
   getDataMock,
 } = require('./controllers/cartolaTesoreriaController.js');
-const { login, ssoValidate } = require('./controllers/authController.js');
+const { login, loginBack } = require('./controllers/authController.js');
 
 //Rutas
 router.post('/ejecutar-script', ejecutarScript); //ejecucion manual de script remoto
@@ -55,6 +55,6 @@ router.post('/cartola-mock', getDataMock); //obtener data de mock
 router.get('/cuadratura/validacion/fechas-anteriores/:fecha', validarFechasAnteriores); // obtener fechas anteriores a la indicada
 router.post('/validar', validarLiquidacionController);
 router.post('/login', login);
-router.post('/sso-validate', ssoValidate);
+router.post('/login-back', loginBack);
 
 module.exports = router;
