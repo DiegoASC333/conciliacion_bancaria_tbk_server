@@ -1,12 +1,11 @@
 const { getConnection, parseJSONLob } = require('../config/utils');
 const oracledb = require('oracledb');
+require('dotenv').config(); // Para cargar las variables del .env
 
 async function getStatusDiarioCuadratura({ fecha, perfil }) {
   const connection = await getConnection();
 
-  // --- Lógica de la Condición de Perfil (sólo para aprobados) ---
   let perfilCondition = '';
-  // Si no se especifica un perfil, la condición queda vacía y se obtienen todos.
   if (perfil) {
     if (perfil.toUpperCase() === 'FICA') {
       perfilCondition = ` AND centro_costo <> 'SD'`;
@@ -95,34 +94,16 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
       binds.fecha = fecha;
     }
 
-    // --- INICIO DE LA MODIFICACIÓN ---
-
-    // 1. Define qué estados deben ser filtrados por perfil.
-    //    En tu caso, solo 'ENCONTRADO' (los aprobados).
     const estadosQueAplicanFiltroPerfil = ['ENCONTRADO'];
+    if (estadosQueAplicanFiltroPerfil && perfil) {
+      const columnaTipoDocSap = 'sap.pade_tipo_documento';
 
-    // 2. Comprueba si la búsqueda actual es para "aprobados".
-    //    Esto es verdad si el array 'estados' existe y TODOS sus elementos están en nuestra lista de filtros.
-    const esBusquedaDeAprobados =
-      Array.isArray(estados) &&
-      estados.length > 0 &&
-      estados.every((e) => estadosQueAplicanFiltroPerfil.includes(String(e).toUpperCase()));
-
-    // 3. Aplica la condición de perfil SÓLO si es una búsqueda de aprobados y se proporcionó un perfil.
-    if (esBusquedaDeAprobados && perfil) {
       if (perfil.toUpperCase() === 'FICA') {
-        conditions.push(`c.centro_costo <> 'SD'`);
+        conditions.push(`(${columnaTipoDocSap} NOT IN ('FA') OR ${columnaTipoDocSap} IS NULL)`);
       } else if (perfil.toUpperCase() === 'SD') {
-        conditions.push(`c.centro_costo = 'SD'`);
+        conditions.push(`${columnaTipoDocSap} IN ('FA')`);
       }
     }
-
-    /*
-    if (perfil && perfil.toUpperCase() === 'FICA') {
-      conditions.push(`c.centro_costo <> 'SD'`);
-    } else if (perfil && perfil.toUpperCase() === 'SD') {
-      conditions.push(`c.centro_costo = 'SD'`);
-    }*/
 
     const isValid = (col) => `REGEXP_LIKE(TRIM(${col}), '^[0-9]*[1-9][0-9]*$')`;
 
@@ -175,9 +156,17 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
         JSON_VALUE(p.respuesta, '$.data[0].NOMBRE_CARRERA'    NULL ON ERROR) AS NOMBRE_CARRERA,
         JSON_VALUE(p.respuesta, '$.data[0].CARRERA'           NULL ON ERROR) AS CARRERA,
         JSON_VALUE(p.respuesta, '$.data[0].TIPO_DOCUMENTO'    NULL ON ERROR) AS TIPO_DOCUMENTO,
-        REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+') AS CODIGO_EXPLICATIVO
+        REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+') AS CODIGO_EXPLICATIVO,
+        sap.pade_tipo_documento AS TIPO_DOCUMENTO_SAP
       FROM cuadratura_file_tbk c
       LEFT JOIN proceso_cupon p ON TO_CHAR(p.cupon) = ${cuponExpr}
+      LEFT JOIN (
+          SELECT 
+              pa_nro_operacion, 
+              MIN(pade_tipo_documento) as pade_tipo_documento -- O MAX(), ambos funcionan si el valor es siempre el mismo
+          FROM pop_pagos_detalle_temp_sap
+          GROUP BY pa_nro_operacion
+      ) sap ON TO_CHAR(sap.pa_nro_operacion) = ${cuponExpr}
       ${whereClause}
       ORDER BY 
       CASE 

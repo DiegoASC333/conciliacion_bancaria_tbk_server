@@ -21,7 +21,7 @@ async function enviarATesoreriaSoloSiSinPendientes({
     const rAprob = await conn.execute(
       `SELECT COUNT(*) AS CANT
          FROM CUADRATURA_FILE_TBK
-        WHERE STATUS_SAP_REGISTER = 'ENCONTRADO'
+        WHERE STATUS_SAP_REGISTER IN {'ENCONTRADO','REPROCESO',''RE-PROCESADO'}
         AND DKTT_DT_FECHA_VENTA = :fecha ${perfilCondition}`,
       { fecha: fecha },
       { outFormat: oracledb.OUT_FORMAT_OBJECT }
