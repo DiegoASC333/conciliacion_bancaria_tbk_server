@@ -13,6 +13,8 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
       perfilCondition = ` AND centro_costo <> 'SD'`;
     } else if (perfil.toUpperCase() === 'SD') {
       perfilCondition = ` AND centro_costo = 'SD'`;
+    } else {
+      perfilCondition = ''; // Si el perfil no es reconocido, no se aplica filtro.
     }
   }
 

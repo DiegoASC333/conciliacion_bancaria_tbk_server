@@ -43,6 +43,47 @@ const login = async (req, res) => {
   }
 };
 
+const loginBack = async (req, res) => {
+  const { rut } = req.body;
+
+  if (!rut) {
+    return res.status(400).json({ message: 'El RUT es requerido.' });
+  }
+
+  const rutNumber = Number(rut);
+
+  try {
+    const user = await authService.encontrarUsuario({ rut: rutNumber });
+
+    if (!user) {
+      return res.status(404).json({ message: 'Usuario no encontrado en el sistema.' });
+    }
+
+    const payload = {
+      rut: user.RUT,
+      rol: user.ROL,
+      perfil: user.PERFIL,
+    };
+
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '8h' });
+
+    res.status(200).json({
+      message: 'Login exitoso',
+      token: token,
+      usuario: {
+        rut: user.RUT,
+        rol: user.ROL,
+        perfil: user.PERFIL,
+        activo: user.ACTIVO,
+      },
+    });
+  } catch (error) {
+    console.error('Error en el controlador de login:', error);
+    res.status(500).json({ message: 'Error interno del servidor' });
+  }
+};
+
 module.exports = {
   login,
+  loginBack,
 };
