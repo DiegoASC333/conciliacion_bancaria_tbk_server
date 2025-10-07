@@ -186,83 +186,67 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
     `;
 
     const res = await conn.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
-    console.log('query', binds, sql);
     const filas = res.rows || [];
 
-    const resultados = await Promise.allSettled(
-      filas.map(async (fila) => {
-        let nombre = 'No encontrado';
+    const limite = 5; // <-- Número máximo de consultas simultáneas
+    const resultados = [];
+    let index = 0;
 
-        function limpiarNombre(nombre) {
-          if (!nombre) return 'No encontrado';
-          try {
-            return Buffer.from(nombre, 'latin1').toString('utf8').trim();
-          } catch (err) {
-            return nombre.trim();
-          }
+    const procesarFila = async (fila) => {
+      let nombre = 'No encontrado';
+
+      const limpiarNombre = (nombre) => {
+        if (!nombre) return 'No encontrado';
+        try {
+          return Buffer.from(nombre, 'latin1').toString('utf8').trim();
+        } catch {
+          return nombre.trim();
         }
+      };
 
-        if (fila.RUT) {
-          try {
-            console.log(`🔹 Consultando API para RUT ${fila.RUT}`);
+      if (fila.RUT) {
+        try {
+          console.log(`🔹 Consultando API para RUT ${fila.RUT}`);
+          const response = await axios.get(
+            `https://api.utalca.cl/academia/jira/consultaClienteSap/${fila.RUT}`,
+            {
+              headers: { token: API_KEY },
+              timeout: 25000,
+            }
+          );
 
-            const response = await axios.get(
-              `https://api.utalca.cl/academia/jira/consultaClienteSap/${fila.RUT}`,
-              {
-                headers: { token: API_KEY },
-                timeout: 25000,
-              }
-            );
-            const data = response.data;
-            const nombreCrudo = data?.nombre || 'No encontrado';
+          const data = response.data;
+          const nombreCrudo = data?.nombre || 'No encontrado';
 
-            nombre = limpiarNombre(nombreCrudo);
-          } catch (error) {
-            console.error('❌ Error al consultar API para RUT', fila.RUT, error.message);
-            nombre = 'No encontrado';
-          }
+          nombre = limpiarNombre(nombreCrudo);
+        } catch (error) {
+          nombre = 'Error API';
         }
-        return {
-          ...fila,
-          NOMBRE: nombre,
-        };
-      })
-    );
+      }
 
-    return resultados.map((r) => (r.status === 'fulfilled' ? r.value : null)).filter(Boolean);
+      return {
+        ...fila,
+        NOMBRE: nombre,
+        NOMBRE_CARRERA: fila.NOMBRE_CARRERA
+          ? Buffer.from(fila.NOMBRE_CARRERA, 'latin1').toString('utf8').trim()
+          : 'No encontrado',
+      };
+    };
+
+    while (index < filas.length) {
+      const lote = filas.slice(index, index + limite);
+      const respuestas = await Promise.all(lote.map(procesarFila));
+      resultados.push(...respuestas);
+
+      index += limite;
+    }
+
+    return resultados;
   } finally {
     try {
       await conn.close();
     } catch {}
   }
-
-  //     const filas = (res.rows || []).map((r) => ({
-  //       ID: r.ID,
-  //       RUT: r.RUT,
-  //       NOMBRE: r.NOMBRE,
-  //       CUOTAS: r.CUOTAS,
-  //       CUPON: r.CUPON,
-  //       FECHA_ABONO: r.FECHA_ABONO,
-  //       FECHA_VENTA: r.FECHA_VENTA,
-  //       MONTO_TRANSACCION: r.MONTO_TRANSACCION,
-  //       TIPO_TRANSACCION: r.TIPO_TRANSACCION,
-  //       fecha_vencimiento: r.FECHA_VENCIMIENTO ?? 'No encontrado',
-  //       nombre_carrera: r.NOMBRE_CARRERA
-  //         ? iconv.decode(Buffer.from(r.NOMBRE_CARRERA, 'latin1'), 'utf8')
-  //         : 'No encontrado',
-  //       carrera: r.CARRERA ?? 'No encontrado',
-  //       tipo_documento: r.TIPO_DOCUMENTO ?? 'No encontrado',
-  //       clase_documento: r.CODIGO_EXPLICATIVO ?? 'No encontrado',
-  //     }));
-
-  //     return filas;
-  //     //return res.rows || [];
-  //   } finally {
-  //     try {
-  //       await conn.close();
-  //     } catch {}
-  //   }
-  // }
 }
 module.exports = {
   getStatusDiarioCuadratura,
