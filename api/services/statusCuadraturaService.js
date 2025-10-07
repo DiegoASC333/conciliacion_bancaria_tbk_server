@@ -3,6 +3,7 @@ const axios = require('axios');
 const iconv = require('iconv-lite');
 const oracledb = require('oracledb');
 require('dotenv').config(); // Para cargar las variables del .env
+const API_KEY = 'e094aebebd85581d08c57bf20d6163a1';
 
 async function getStatusDiarioCuadratura({ fecha, perfil }) {
   const connection = await getConnection();
@@ -23,7 +24,7 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
       SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN 1 ELSE 0 END) AS APROBADOS_DIARIO,
       SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_APROBADOS
     FROM CUADRATURA_FILE_TBK
-    WHERE DKTT_DT_FECHA_VENTA = :fecha
+    WHERE DKTT_DT_TRAN_DAT = :fecha
     AND DKTT_DT_ID_RETAILER NOT IN (597048211418,28208820, 48211418,597028208820)
     ${perfilCondition}  -- La condición del perfil se aplica AQUÍ
   `;
@@ -37,14 +38,13 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
       SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN 1 ELSE 0 END) AS REPROCESADOS_DIARIO,
       SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_REPROCESADOS
     FROM CUADRATURA_FILE_TBK
-    WHERE DKTT_DT_FECHA_VENTA = :fecha
+    WHERE DKTT_DT_TRAN_DAT = :fecha
     AND DKTT_DT_ID_RETAILER NOT IN (597048211418,28208820, 48211418,597028208820)
   `;
 
   try {
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
     const binds = { fecha: fecha };
-
     const [resAprobados, resOtros] = await Promise.all([
       connection.execute(sqlAprobados, binds, options),
       connection.execute(sqlOtros, binds, options),
@@ -95,7 +95,7 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
     }
 
     if (fecha) {
-      conditions.push(`c.DKTT_DT_FECHA_VENTA = :fecha`);
+      conditions.push(`c.DKTT_DT_TRAN_DAT = :fecha`);
       binds.fecha = fecha;
     }
 
@@ -186,76 +186,84 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
     `;
 
     const res = await conn.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
-    //   const filas = res.rows || [];
+    console.log('query', binds, sql);
+    const filas = res.rows || [];
 
-    //   // 🔹 Consultar nombre desde la API para cada fila
-    //   const resultados = await Promise.allSettled(
-    //     filas.map(async (fila) => {
-    //       let nombre = 'No encontrado';
-    //       if (fila.RUT) {
-    //         try {
-    //           console.log(`🔹 Consultando API para RUT ${fila.RUT}`);
-    //           const response = await axios.get(
-    //             `http://condor2.utalca.cl/pls/cob/portal_ws.get_datos_cliente`,
-    //             {
-    //               params: { p_codigo_cli: fila.RUT, p_refresh: 'S' },
-    //               timeout: 3000,
-    //             }
-    //           );
-    //           const data = response.data;
-    //           console.log('data json', data);
+    const resultados = await Promise.allSettled(
+      filas.map(async (fila) => {
+        let nombre = 'No encontrado';
 
-    //           // Dependiendo del formato del JSON, ajusta esta línea
-    //           nombre = data?.data?.[0]?.NOMBRE || data?.NOMBRE || 'No encontrado';
-    //         } catch (error) {
-    //           console.error('❌ Error al consultar API para RUT', fila.RUT, error.message);
-    //           nombre = 'Error API';
-    //         }
-    //       }
+        function limpiarNombre(nombre) {
+          if (!nombre) return 'No encontrado';
+          try {
+            return Buffer.from(nombre, 'latin1').toString('utf8').trim();
+          } catch (err) {
+            return nombre.trim();
+          }
+        }
 
-    //       return {
-    //         ...fila,
-    //         NOMBRE: nombre,
-    //       };
-    //     })
-    //   );
+        if (fila.RUT) {
+          try {
+            console.log(`🔹 Consultando API para RUT ${fila.RUT}`);
 
-    //   // 🔹 Extraer resultados exitosos
-    //   return resultados.map((r) => (r.status === 'fulfilled' ? r.value : null)).filter(Boolean);
-    // } finally {
-    //   try {
-    //     await conn.close();
-    //   } catch {}
-    // }
+            const response = await axios.get(
+              `https://api.utalca.cl/academia/jira/consultaClienteSap/${fila.RUT}`,
+              {
+                headers: { token: API_KEY },
+                timeout: 25000,
+              }
+            );
+            const data = response.data;
+            const nombreCrudo = data?.nombre || 'No encontrado';
 
-    const filas = (res.rows || []).map((r) => ({
-      ID: r.ID,
-      RUT: r.RUT,
-      NOMBRE: r.NOMBRE,
-      CUOTAS: r.CUOTAS,
-      CUPON: r.CUPON,
-      FECHA_ABONO: r.FECHA_ABONO,
-      FECHA_VENTA: r.FECHA_VENTA,
-      MONTO_TRANSACCION: r.MONTO_TRANSACCION,
-      TIPO_TRANSACCION: r.TIPO_TRANSACCION,
-      fecha_vencimiento: r.FECHA_VENCIMIENTO ?? 'No encontrado',
-      nombre_carrera: r.NOMBRE_CARRERA
-        ? iconv.decode(Buffer.from(r.NOMBRE_CARRERA, 'latin1'), 'utf8')
-        : 'No encontrado',
-      carrera: r.CARRERA ?? 'No encontrado',
-      tipo_documento: r.TIPO_DOCUMENTO ?? 'No encontrado',
-      clase_documento: r.CODIGO_EXPLICATIVO ?? 'No encontrado',
-    }));
+            nombre = limpiarNombre(nombreCrudo);
+          } catch (error) {
+            console.error('❌ Error al consultar API para RUT', fila.RUT, error.message);
+            nombre = 'No encontrado';
+          }
+        }
+        return {
+          ...fila,
+          NOMBRE: nombre,
+        };
+      })
+    );
 
-    return filas;
-    //return res.rows || [];
+    return resultados.map((r) => (r.status === 'fulfilled' ? r.value : null)).filter(Boolean);
   } finally {
     try {
       await conn.close();
     } catch {}
   }
-}
 
+  //     const filas = (res.rows || []).map((r) => ({
+  //       ID: r.ID,
+  //       RUT: r.RUT,
+  //       NOMBRE: r.NOMBRE,
+  //       CUOTAS: r.CUOTAS,
+  //       CUPON: r.CUPON,
+  //       FECHA_ABONO: r.FECHA_ABONO,
+  //       FECHA_VENTA: r.FECHA_VENTA,
+  //       MONTO_TRANSACCION: r.MONTO_TRANSACCION,
+  //       TIPO_TRANSACCION: r.TIPO_TRANSACCION,
+  //       fecha_vencimiento: r.FECHA_VENCIMIENTO ?? 'No encontrado',
+  //       nombre_carrera: r.NOMBRE_CARRERA
+  //         ? iconv.decode(Buffer.from(r.NOMBRE_CARRERA, 'latin1'), 'utf8')
+  //         : 'No encontrado',
+  //       carrera: r.CARRERA ?? 'No encontrado',
+  //       tipo_documento: r.TIPO_DOCUMENTO ?? 'No encontrado',
+  //       clase_documento: r.CODIGO_EXPLICATIVO ?? 'No encontrado',
+  //     }));
+
+  //     return filas;
+  //     //return res.rows || [];
+  //   } finally {
+  //     try {
+  //       await conn.close();
+  //     } catch {}
+  //   }
+  // }
+}
 module.exports = {
   getStatusDiarioCuadratura,
   listarPorTipo,

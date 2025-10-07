@@ -154,25 +154,13 @@ async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
     whereClause = `
       WHERE l.TIPO_TRANSACCION = :tipo 
       AND l.liq_fpago = :fechaParam
-      AND EXISTS (
-          SELECT 1 FROM CCN_TBK_HISTORICO h
-          WHERE 
-            (${isValid('liq_orpedi')} AND LTRIM(TRIM(l.liq_orpedi), '0') = LTRIM(TRIM(h.DKTT_DT_NUMERO_UNICO), '0'))
-            OR 
-            (NOT ${isValid('liq_orpedi')} AND TRIM(l.liq_codaut) = h.DKTT_DT_APPRV_CDE)
-      )`;
+    `;
     binds = { tipo: tipoUpper, fechaParam: fechaPago_LCN };
   } else if (tipoUpper === 'LDN') {
     whereClause = `
-      WHERE l.TIPO_TRANSACCION = :tipo
-      AND l.liq_fedi = :fechaParam
-      AND EXISTS (
-          SELECT 1 FROM CDN_TBK_HISTORICO h
-          WHERE 
-            (${isValid('liq_nro_unico')} AND LTRIM(TRIM(l.liq_nro_unico), '0') = LTRIM(TRIM(h.DSK_ID_NRO_UNICO), '0'))
-            OR 
-            (NOT ${isValid('liq_nro_unico')} AND TRIM(l.liq_appr) = h.DSK_APPVR_CDE)
-      )`;
+        WHERE l.TIPO_TRANSACCION = :tipo
+        AND l.liq_fedi = :fechaParam
+      `;
     binds = { tipo: tipoUpper, fechaParam: fechaEdi_LDN };
   } else {
     throw new Error('Tipo no soportado');
@@ -240,6 +228,9 @@ async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
     }
 
     const moveResult = await connection.execute(moverDatosSql, binds, { autoCommit: false });
+
+    console.log('SQL moverDatosSql:', moverDatosSql);
+    console.log('Binds:', binds);
 
     const deleteSql = `DELETE FROM LIQUIDACION_FILE_TBK l ${whereClause}`;
     await connection.execute(deleteSql, binds, { autoCommit: false });

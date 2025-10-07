@@ -105,12 +105,10 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
   `;
 
   // === Indicador de validez (SI / NO) ===
-  const esValidoExpr = `
-    CASE
-      WHEN h.DKTT_DT_NUMERO_UNICO IS NOT NULL OR h.DSK_ID_NRO_UNICO IS NOT NULL THEN 'SI'
-      ELSE 'NO'
-    END
-  `;
+  const esValidoExpr =
+    tipoUpper === 'LCN'
+      ? `CASE WHEN h.DKTT_DT_NUMERO_UNICO IS NOT NULL THEN 'SI' ELSE 'NO' END`
+      : `CASE WHEN h.DSK_ID_NRO_UNICO IS NOT NULL THEN 'SI' ELSE 'NO' END`;
 
   const sql = `
     SELECT
@@ -131,7 +129,7 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
       END AS TOTAL_CUOTAS,
       ${codAutorizacionExpr}    AS CODIGO_AUTORIZACION,
       NVL(h.tipo_documento, 'Sin Documento') as TIPO_DOCUMENTO,
-      ${esValidoExpr}           AS ES_VALIDO,
+      ${esValidoExpr}           AS DAFE
     FROM liquidacion_file_tbk l
     ${joinClause}
     ${joinProcesoCupon}

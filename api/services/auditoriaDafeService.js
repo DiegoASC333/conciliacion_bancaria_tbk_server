@@ -21,8 +21,8 @@ async function enviarATesoreriaSoloSiSinPendientes({
     const rAprob = await conn.execute(
       `SELECT COUNT(*) AS CANT
          FROM CUADRATURA_FILE_TBK
-        WHERE STATUS_SAP_REGISTER IN {'ENCONTRADO','REPROCESO',''RE-PROCESADO'}
-        AND DKTT_DT_FECHA_VENTA = :fecha ${perfilCondition}`,
+        WHERE STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
+        AND DKTT_DT_TRAN_DAT = :fecha ${perfilCondition}`,
       { fecha: fecha },
       { outFormat: oracledb.OUT_FORMAT_OBJECT }
     );
@@ -73,7 +73,7 @@ async function enviarATesoreriaSoloSiSinPendientes({
         proceso_cupon p ON cft.ID = p.id_cuadratura
     WHERE 
         cft.STATUS_SAP_REGISTER = 'ENCONTRADO'
-        AND cft.DKTT_DT_FECHA_VENTA = :fecha
+        AND cft.DKTT_DT_TRAN_DAT = :fecha
         AND cft.TIPO_TRANSACCION = 'CCN'
       ${perfilCondition}`;
     await conn.execute(moverCreditosSql, { fecha: fecha }, { autoCommit: false });
@@ -103,15 +103,15 @@ async function enviarATesoreriaSoloSiSinPendientes({
           proceso_cupon p ON cft.ID = p.id_cuadratura
       WHERE 
           cft.STATUS_SAP_REGISTER = 'ENCONTRADO'
-          AND cft.DKTT_DT_FECHA_VENTA = :fecha
+          AND cft.DKTT_DT_TRAN_DAT = :fecha
           AND cft.TIPO_TRANSACCION = 'CDN'
       ${perfilCondition}`;
     await conn.execute(moverDebitosSql, { fecha: fecha }, { autoCommit: false });
 
     const deleteResult = await conn.execute(
       `DELETE FROM CUADRATURA_FILE_TBK
-        WHERE STATUS_SAP_REGISTER = 'ENCONTRADO'
-          AND DKTT_DT_FECHA_VENTA = :fecha
+        WHERE STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
+          AND DKTT_DT_TRAN_DAT = :fecha
            ${perfilCondition}`,
       { fecha: fecha },
       { autoCommit: false }
@@ -137,11 +137,11 @@ async function existenPendientesAnterioresA({ fecha }) {
     const estadosPendientes = ['NO EXISTE', 'PENDIENTE', 'ENCONTRADO', 'REPROCESO'];
 
     const sql = `
-      SELECT DKTT_DT_FECHA_VENTA AS FECHA_MAS_RECIENTE
+      SELECT DKTT_DT_TRAN_DAT AS FECHA_MAS_RECIENTE
       FROM CUADRATURA_FILE_TBK
-      WHERE DKTT_DT_FECHA_VENTA < :fecha
+      WHERE DKTT_DT_TRAN_DAT < :fecha
         AND STATUS_SAP_REGISTER IN (${estadosPendientes.map((_, i) => `:estado${i}`).join(', ')})
-      ORDER BY DKTT_DT_FECHA_VENTA DESC
+      ORDER BY DKTT_DT_TRAN_DAT DESC
       FETCH FIRST 1 ROWS ONLY`;
 
     const binds = { fecha: fecha };
