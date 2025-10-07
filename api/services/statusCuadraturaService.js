@@ -1,4 +1,6 @@
-const { getConnection, parseJSONLob } = require('../config/utils');
+const { getConnection } = require('../config/utils');
+const axios = require('axios');
+const iconv = require('iconv-lite');
 const oracledb = require('oracledb');
 require('dotenv').config(); // Para cargar las variables del .env
 
@@ -132,7 +134,6 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
         c.id as ID, 
         ${cuponExpr}                       AS CUPON,
         p.rut AS RUT,
-        vec_cob01.pip_obtiene_nombre(p.rut) as NOMBRE, 
         TRUNC(c.DKTT_DT_AMT_1/100)           AS MONTO_TRANSACCION,
         CASE 
           WHEN c.DKTT_DT_CANTI_CUOTAS IS NULL THEN 0 
@@ -183,6 +184,47 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
     `;
 
     const res = await conn.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    //   const filas = res.rows || [];
+
+    //   // 🔹 Consultar nombre desde la API para cada fila
+    //   const resultados = await Promise.allSettled(
+    //     filas.map(async (fila) => {
+    //       let nombre = 'No encontrado';
+    //       if (fila.RUT) {
+    //         try {
+    //           console.log(`🔹 Consultando API para RUT ${fila.RUT}`);
+    //           const response = await axios.get(
+    //             `http://condor2.utalca.cl/pls/cob/portal_ws.get_datos_cliente`,
+    //             {
+    //               params: { p_codigo_cli: fila.RUT, p_refresh: 'S' },
+    //               timeout: 3000,
+    //             }
+    //           );
+    //           const data = response.data;
+    //           console.log('data json', data);
+
+    //           // Dependiendo del formato del JSON, ajusta esta línea
+    //           nombre = data?.data?.[0]?.NOMBRE || data?.NOMBRE || 'No encontrado';
+    //         } catch (error) {
+    //           console.error('❌ Error al consultar API para RUT', fila.RUT, error.message);
+    //           nombre = 'Error API';
+    //         }
+    //       }
+
+    //       return {
+    //         ...fila,
+    //         NOMBRE: nombre,
+    //       };
+    //     })
+    //   );
+
+    //   // 🔹 Extraer resultados exitosos
+    //   return resultados.map((r) => (r.status === 'fulfilled' ? r.value : null)).filter(Boolean);
+    // } finally {
+    //   try {
+    //     await conn.close();
+    //   } catch {}
+    // }
 
     const filas = (res.rows || []).map((r) => ({
       ID: r.ID,
@@ -195,7 +237,9 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
       MONTO_TRANSACCION: r.MONTO_TRANSACCION,
       TIPO_TRANSACCION: r.TIPO_TRANSACCION,
       fecha_vencimiento: r.FECHA_VENCIMIENTO ?? 'No encontrado',
-      nombre_carrera: r.NOMBRE_CARRERA ?? 'No encontrado',
+      nombre_carrera: r.NOMBRE_CARRERA
+        ? iconv.decode(Buffer.from(r.NOMBRE_CARRERA, 'latin1'), 'utf8')
+        : 'No encontrado',
       carrera: r.CARRERA ?? 'No encontrado',
       tipo_documento: r.TIPO_DOCUMENTO ?? 'No encontrado',
       clase_documento: r.CODIGO_EXPLICATIVO ?? 'No encontrado',

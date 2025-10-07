@@ -25,7 +25,7 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
   let joinClause = '';
   if (tipoUpper === 'LCN') {
     joinClause = `
-      INNER JOIN CCN_TBK_HISTORICO h ON
+      LEFT JOIN CCN_TBK_HISTORICO h ON
         (
           ${isValid('liq_orpedi')} AND
           LTRIM(TRIM(l.liq_orpedi), '0') = LTRIM(TRIM(h.DKTT_DT_NUMERO_UNICO), '0')
@@ -37,7 +37,7 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
     `;
   } else if (tipoUpper === 'LDN') {
     joinClause = `
-      INNER JOIN CDN_TBK_HISTORICO h ON
+      LEFT JOIN CDN_TBK_HISTORICO h ON
         (
           ${isValid('liq_nro_unico')} AND
           LTRIM(TRIM(l.liq_nro_unico), '0') = LTRIM(TRIM(h.DSK_ID_NRO_UNICO), '0')
@@ -53,6 +53,8 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
     tipoUpper === 'LCN'
       ? `CASE WHEN ${isValid('liq_orpedi')} THEN LTRIM(TRIM(l.liq_orpedi), '0') ELSE TRIM(l.liq_codaut) END`
       : `CASE WHEN ${isValid('liq_nro_unico')} THEN LTRIM(TRIM(l.liq_nro_unico), '0') ELSE LTRIM(TRIM(l.liq_appr), '0') END`;
+
+  const joinProcesoCupon = ` LEFT JOIN PROCESO_CUPON pc ON LTRIM(TRIM(pc.CUPON), '0') = ${cuponExpr}`;
 
   const codAutorizacionExpr = tipoUpper === 'LCN' ? 'TRIM(l.liq_codaut)' : 'TRIM(l.liq_appr)';
 
@@ -102,6 +104,14 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
       l.date_load_bbdd DESC NULLS LAST
   `;
 
+  // === Indicador de validez (SI / NO) ===
+  const esValidoExpr = `
+    CASE
+      WHEN h.DKTT_DT_NUMERO_UNICO IS NOT NULL OR h.DSK_ID_NRO_UNICO IS NOT NULL THEN 'SI'
+      ELSE 'NO'
+    END
+  `;
+
   const sql = `
     SELECT
       ${fechaAbono}             AS FECHA_ABONO,
@@ -120,9 +130,11 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
         ELSE 1
       END AS TOTAL_CUOTAS,
       ${codAutorizacionExpr}    AS CODIGO_AUTORIZACION,
-      NVL(h.tipo_documento, 'Sin Documento') as TIPO_DOCUMENTO
+      NVL(h.tipo_documento, 'Sin Documento') as TIPO_DOCUMENTO,
+      ${esValidoExpr}           AS ES_VALIDO,
     FROM liquidacion_file_tbk l
     ${joinClause}
+    ${joinProcesoCupon}
     WHERE
     ${where}
     ${orderBy}
