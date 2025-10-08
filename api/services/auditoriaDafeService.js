@@ -72,7 +72,7 @@ async function enviarATesoreriaSoloSiSinPendientes({
     JOIN 
         proceso_cupon p ON cft.ID = p.id_cuadratura
     WHERE 
-        cft.STATUS_SAP_REGISTER = 'ENCONTRADO'
+        cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
         AND cft.DKTT_DT_TRAN_DAT = :fecha
         AND cft.TIPO_TRANSACCION = 'CCN'
       ${perfilCondition}`;
@@ -102,7 +102,7 @@ async function enviarATesoreriaSoloSiSinPendientes({
       JOIN 
           proceso_cupon p ON cft.ID = p.id_cuadratura
       WHERE 
-          cft.STATUS_SAP_REGISTER = 'ENCONTRADO'
+          cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
           AND cft.DKTT_DT_TRAN_DAT = :fecha
           AND cft.TIPO_TRANSACCION = 'CDN'
       ${perfilCondition}`;

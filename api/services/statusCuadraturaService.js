@@ -8,43 +8,69 @@ const API_KEY = 'e094aebebd85581d08c57bf20d6163a1';
 async function getStatusDiarioCuadratura({ fecha, perfil }) {
   const connection = await getConnection();
 
-  let perfilCondition = '';
+  // 🔹 Lógica de condición dinámica según perfil
+  let condicionPerfil = '';
   if (perfil) {
-    if (perfil.toUpperCase() === 'FICA') {
-      perfilCondition = ` AND centro_costo <> 'SD'`;
-    } else if (perfil.toUpperCase() === 'SD') {
-      perfilCondition = ` AND centro_costo = 'SD'`;
-    } else {
-      perfilCondition = ''; // Si el perfil no es reconocido, no se aplica filtro.
+    const perfilUpper = perfil.toUpperCase();
+    if (perfilUpper === 'SD') {
+      condicionPerfil = `
+        AND NVL(
+              CASE
+                WHEN p.pade_tipo_documento = 'FA' THEN 'SD'
+                WHEN p.pade_tipo_documento IS NOT NULL THEN 'FICA'
+              END, 'FICA'
+            ) = 'SD'
+      `;
+    } else if (perfilUpper === 'FICA') {
+      condicionPerfil = `
+        AND NVL(
+              CASE
+                WHEN p.pade_tipo_documento = 'FA' THEN 'SD'
+                WHEN p.pade_tipo_documento IS NOT NULL THEN 'FICA'
+              END, 'FICA'
+            ) = 'FICA'
+      `;
     }
   }
 
   const sqlAprobados = `
     SELECT
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN 1 ELSE 0 END) AS APROBADOS_DIARIO,
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_APROBADOS
-    FROM CUADRATURA_FILE_TBK
-    WHERE DKTT_DT_TRAN_DAT = :fecha
-    AND DKTT_DT_ID_RETAILER NOT IN (597048211418,28208820, 48211418,597028208820)
-    ${perfilCondition}  -- La condición del perfil se aplica AQUÍ
+      SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN 1 ELSE 0 END) AS APROBADOS_DIARIO,
+      SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN TRUNC(c.DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_APROBADOS
+    FROM CUADRATURA_FILE_TBK c
+    LEFT JOIN (
+      SELECT pa_nro_operacion, MAX(pade_tipo_documento) AS pade_tipo_documento
+      FROM pop_pagos_detalle_temp_sap
+      GROUP BY pa_nro_operacion
+    ) p ON (
+      (REGEXP_LIKE(TRIM(c.DKTT_DT_NUMERO_UNICO), '^[0-9]*[1-9][0-9]*$')
+        AND TRIM(c.DKTT_DT_NUMERO_UNICO) = p.pa_nro_operacion)
+      OR
+      (REGEXP_LIKE(TRIM(c.DSK_ID_NRO_UNICO), '^[0-9]*[1-9][0-9]*$')
+        AND TRIM(c.DSK_ID_NRO_UNICO) = p.pa_nro_operacion)
+    )
+    WHERE c.DKTT_DT_TRAN_DAT = :fecha
+      AND c.DKTT_DT_ID_RETAILER NOT IN (597048211418, 28208820, 48211418, 597028208820)
+      ${condicionPerfil}
   `;
 
   const sqlOtros = `
     SELECT
       COUNT(*) AS TOTAL_DIARIO,
-      SUM(TRUNC(DKTT_DT_AMT_1/100)) AS MONTO_TOTAL_DIARIO,
+      SUM(TRUNC(DKTT_DT_AMT_1 / 100)) AS MONTO_TOTAL_DIARIO,
       SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE') THEN 1 ELSE 0 END) AS RECHAZADOS_DIARIO,
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE') THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_RECHAZADOS,
+      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE') THEN TRUNC(DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_RECHAZADOS,
       SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN 1 ELSE 0 END) AS REPROCESADOS_DIARIO,
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN TRUNC(DKTT_DT_AMT_1/100) ELSE 0 END) AS MONTO_REPROCESADOS
+      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN TRUNC(DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_REPROCESADOS
     FROM CUADRATURA_FILE_TBK
     WHERE DKTT_DT_TRAN_DAT = :fecha
-    AND DKTT_DT_ID_RETAILER NOT IN (597048211418,28208820, 48211418,597028208820)
+      AND DKTT_DT_ID_RETAILER NOT IN (597048211418, 28208820, 48211418, 597028208820)
   `;
 
   try {
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
-    const binds = { fecha: fecha };
+    const binds = { fecha };
+
     const [resAprobados, resOtros] = await Promise.all([
       connection.execute(sqlAprobados, binds, options),
       connection.execute(sqlOtros, binds, options),
@@ -54,6 +80,7 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
     const rOtros = resOtros.rows?.[0] || {};
 
     return {
+      perfil: perfil || 'TODOS',
       total_diario: Number(rOtros.TOTAL_DIARIO || 0),
       monto_total_diario: Number(rOtros.MONTO_TOTAL_DIARIO || 0),
 
@@ -62,11 +89,12 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
 
       rechazados_diario: Number(rOtros.RECHAZADOS_DIARIO || 0),
       monto_rechazados: Number(rOtros.MONTO_RECHAZADOS || 0),
+
       reprocesados_diario: Number(rOtros.REPROCESADOS_DIARIO || 0),
       monto_reprocesados: Number(rOtros.MONTO_REPROCESADOS || 0),
     };
   } catch (error) {
-    console.error('error', error);
+    console.error('Error en getStatusDiarioCuadratura:', error);
     throw error;
   } finally {
     try {
