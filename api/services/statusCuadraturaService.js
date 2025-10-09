@@ -127,8 +127,13 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
       binds.fecha = fecha;
     }
 
+    /**Lógica de perfil */
     const estadosQueAplicanFiltroPerfil = ['ENCONTRADO'];
-    if (estadosQueAplicanFiltroPerfil && perfil) {
+    const estadoIncluyeEncontrado =
+      Array.isArray(estados) &&
+      estados.some((e) => estadosQueAplicanFiltroPerfil.includes(String(e).toUpperCase()));
+
+    if (estadoIncluyeEncontrado && perfil) {
       const columnaTipoDocSap = 'sap.pade_tipo_documento';
 
       if (perfil.toUpperCase() === 'FICA') {
@@ -137,6 +142,7 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
         conditions.push(`${columnaTipoDocSap} IN ('FA')`);
       }
     }
+    /**Lógica de perfil*/
 
     const isValid = (col) => `REGEXP_LIKE(TRIM(${col}), '^[0-9]*[1-9][0-9]*$')`;
 
@@ -197,7 +203,7 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
       LEFT JOIN (
           SELECT 
               pa_nro_operacion, 
-              MIN(pade_tipo_documento) as pade_tipo_documento -- O MAX(), ambos funcionan si el valor es siempre el mismo
+              MIN(pade_tipo_documento) as pade_tipo_documento -- O MAX(),
           FROM pop_pagos_detalle_temp_sap
           GROUP BY pa_nro_operacion
       ) sap ON TO_CHAR(sap.pa_nro_operacion) = ${cuponExpr}
@@ -234,7 +240,6 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
 
       if (fila.RUT) {
         try {
-          console.log(`🔹 Consultando API para RUT ${fila.RUT}`);
           const response = await axios.get(
             `https://api.utalca.cl/academia/jira/consultaClienteSap/${fila.RUT}`,
             {

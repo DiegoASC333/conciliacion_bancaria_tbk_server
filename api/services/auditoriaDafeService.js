@@ -11,22 +11,43 @@ async function enviarATesoreriaSoloSiSinPendientes({
   const conn = await getConnection();
 
   try {
+    // 🟢 Condición según perfil (mantiene tu lógica original)
+    const perfilUpper = perfil ? perfil.toUpperCase() : '';
     let perfilCondition = '';
     if (perfil && perfil.toUpperCase() === 'FICA') {
-      perfilCondition = ` AND centro_costo <> 'SD'`;
+      perfilCondition = ` AND NVL(pagos.pade_tipo_documento, 'FICA') <> 'FA'`;
     } else if (perfil && perfil.toUpperCase() === 'SD') {
-      perfilCondition = ` AND centro_costo = 'SD'`;
+      perfilCondition = ` AND NVL(pagos.pade_tipo_documento, 'FICA') = 'FA'`;
     }
 
+    // 🟡 Query para contar registros aprobados (ahora con join a pagos)
+    const countSql = `
+      SELECT COUNT(*) AS CANT
+      FROM CUADRATURA_FILE_TBK cft
+      LEFT JOIN (
+        SELECT pa_nro_operacion, MAX(pade_tipo_documento) AS pade_tipo_documento
+        FROM pop_pagos_detalle_temp_sap
+        GROUP BY pa_nro_operacion
+      ) pagos ON (
+        (REGEXP_LIKE(TRIM(cft.DKTT_DT_NUMERO_UNICO), '^[0-9]*[1-9][0-9]*$')
+          AND TRIM(cft.DKTT_DT_NUMERO_UNICO) = pagos.pa_nro_operacion)
+        OR
+        (REGEXP_LIKE(TRIM(cft.DSK_ID_NRO_UNICO), '^[0-9]*[1-9][0-9]*$')
+          AND TRIM(cft.DSK_ID_NRO_UNICO) = pagos.pa_nro_operacion)
+      )
+      WHERE cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
+      AND cft.DKTT_DT_TRAN_DAT = :fecha
+      ${perfilCondition}
+    `;
+
     const rAprob = await conn.execute(
-      `SELECT COUNT(*) AS CANT
-         FROM CUADRATURA_FILE_TBK
-        WHERE STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
-        AND DKTT_DT_TRAN_DAT = :fecha ${perfilCondition}`,
-      { fecha: fecha },
+      countSql,
+      { fecha },
       { outFormat: oracledb.OUT_FORMAT_OBJECT }
     );
-    const cant = rAprob.rows[0].CANT ?? 0;
+    const cant = rAprob.rows[0]?.CANT ?? 0;
+
+    console.log(`🟢 Registros aprobados (${perfilUpper}): ${cant}`);
 
     if (cant === 0) {
       const err = new Error('No hay registros aprobados para enviar en la fecha especificada.');
@@ -34,91 +55,120 @@ async function enviarATesoreriaSoloSiSinPendientes({
       throw err;
     }
 
+    // 🟢 Registrar log (mantiene tu estructura)
     await conn.execute(
-      `INSERT INTO LOG_ENVIO_TESORERÍA (ID_AUD, DETALLE_AUDITORIA,USUARIO, REGISTROS_ENVIADOS, FECHA_ENVIO)
+      `INSERT INTO LOG_ENVIO_TESORERÍA (ID_AUD, DETALLE_AUDITORIA, USUARIO, REGISTROS_ENVIADOS, FECHA_ENVIO)
        VALUES (SEQ_AUD_ENVIO_TESORERIA.NEXTVAL, :totalDiario, :usuario, :cant, SYSDATE)`,
       { usuario: usuarioId, cant, totalDiario },
       { autoCommit: false }
     );
 
+    // ===============================
+    // 🟠 INSERT CCN (comentado)
+    // ===============================
     const moverCreditosSql = `
       INSERT INTO CCN_TBK_HISTORICO (
-      ID_CCN, DKTT_DT_REG, DKTT_DT_TYP, DKTT_DT_TC, DKTT_DT_SEQ_NUM,
-      DKTT_DT_TRAN_DAT, DKTT_DT_TRAN_TIM, DKTT_DT_INST_RETAILER, DKTT_DT_ID_RETAILER,
-      DKTT_DT_NAME_RETAILER, DKTT_DT_CARD, DKTT_DT_AMT_1, DKTT_DT_AMT_PROPINA, DKTT_TIPO_CUOTA,
-      DKTT_DT_CANTI_CUOTAS, DKTT_DT_RESP_CDE, DKTT_DT_APPRV_CDE, DKTT_DT_TERM_NAME, DKTT_DT_ID_CAJA, 
-      DKTT_DT_NUM_BOLETA, DKTT_DT_AUTH_TRACK2, DKTT_DT_FECHA_VENTA, DKTT_DT_HORA_VENTA, DKTT_DT_FECHA_PAGO, 
-      DKTT_DT_COD_RECHAZO, DKTT_DT_GLOSA_RECHAZO, DKTT_DT_VAL_CUOTA, DKTT_DT_VAL_TASA, DKTT_DT_NUMERO_UNICO, 
-      DKTT_DT_TIPO_MONEDA, DKTT_DT_ID_RETAILER_RE,DKTT_DT_COD_SERVICIO, DKTT_DT_VCI, DKTT_MES_GRACIA, 
-      DKTT_PERIODO_GRACIA, TIPO_DOCUMENTO
-    )
-    SELECT
-        cft.ID, cft.DKTT_DT_REG,cft.DKTT_DT_TYP,cft.DKTT_DT_TC,
-        cft.DKTT_DT_SEQ_NUM,cft.DKTT_DT_TRAN_DAT,cft.DKTT_DT_TRAN_TIM,
-        cft.DKTT_DT_INST_RETAILER,cft.DKTT_DT_ID_RETAILER,
-        cft.DKTT_DT_NAME_RETAILER,cft.DKTT_DT_CARD, cft.DKTT_DT_AMT_1,cft.DKTT_DT_AMT_PROPINA,
-        cft.DKTT_TIPO_CUOTA,cft.DKTT_DT_CANTI_CUOTAS,
-        cft.DKTT_DT_RESP_CDE, cft.DKTT_DT_APPRV_CDE,cft.DKTT_DT_TERM_NAME,
+        ID_CCN, DKTT_DT_REG, DKTT_DT_TYP, DKTT_DT_TC, DKTT_DT_SEQ_NUM,
+        DKTT_DT_TRAN_DAT, DKTT_DT_TRAN_TIM, DKTT_DT_INST_RETAILER, DKTT_DT_ID_RETAILER,
+        DKTT_DT_NAME_RETAILER, DKTT_DT_CARD, DKTT_DT_AMT_1, DKTT_DT_AMT_PROPINA, DKTT_TIPO_CUOTA,
+        DKTT_DT_CANTI_CUOTAS, DKTT_DT_RESP_CDE, DKTT_DT_APPRV_CDE, DKTT_DT_TERM_NAME, DKTT_DT_ID_CAJA, 
+        DKTT_DT_NUM_BOLETA, DKTT_DT_AUTH_TRACK2, DKTT_DT_FECHA_VENTA, DKTT_DT_HORA_VENTA, DKTT_DT_FECHA_PAGO, 
+        DKTT_DT_COD_RECHAZO, DKTT_DT_GLOSA_RECHAZO, DKTT_DT_VAL_CUOTA, DKTT_DT_VAL_TASA, DKTT_DT_NUMERO_UNICO, 
+        DKTT_DT_TIPO_MONEDA, DKTT_DT_ID_RETAILER_RE,DKTT_DT_COD_SERVICIO, DKTT_DT_VCI, DKTT_MES_GRACIA, 
+        DKTT_PERIODO_GRACIA, TIPO_DOCUMENTO
+      )
+      SELECT
+        cft.ID, cft.DKTT_DT_REG, cft.DKTT_DT_TYP, cft.DKTT_DT_TC,
+        cft.DKTT_DT_SEQ_NUM, cft.DKTT_DT_TRAN_DAT, cft.DKTT_DT_TRAN_TIM,
+        cft.DKTT_DT_INST_RETAILER, cft.DKTT_DT_ID_RETAILER,
+        cft.DKTT_DT_NAME_RETAILER, cft.DKTT_DT_CARD, cft.DKTT_DT_AMT_1, cft.DKTT_DT_AMT_PROPINA,
+        cft.DKTT_TIPO_CUOTA, cft.DKTT_DT_CANTI_CUOTAS,
+        cft.DKTT_DT_RESP_CDE, cft.DKTT_DT_APPRV_CDE, cft.DKTT_DT_TERM_NAME,
         cft.DKTT_DT_ID_CAJA, cft.DKTT_DT_NUM_BOLETA,
-        cft.DKTT_DT_AUTH_TRACK2,cft.DKTT_DT_FECHA_VENTA,cft.DKTT_DT_HORA_VENTA,cft.DKTT_DT_FECHA_PAGO, 
-        cft.DKTT_DT_COD_RECHAZO,cft.DKTT_DT_GLOSA_RECHAZO,cft.DKTT_DT_VAL_CUOTA,
-        cft.DKTT_DT_VAL_TASA,cft.DKTT_DT_NUMERO_UNICO, cft.DKTT_DT_TIPO_MONEDA,
-        cft.DKTT_DT_ID_RETAILER_RE,cft.DKTT_DT_COD_SERVICIO,
-        cft.DKTT_DT_VCI,cft.DKTT_MES_GRACIA, 
-        cft.DKTT_PERIODO_GRACIA,
+        cft.DKTT_DT_AUTH_TRACK2, cft.DKTT_DT_FECHA_VENTA, cft.DKTT_DT_HORA_VENTA, cft.DKTT_DT_FECHA_PAGO, 
+        cft.DKTT_DT_COD_RECHAZO, cft.DKTT_DT_GLOSA_RECHAZO, cft.DKTT_DT_VAL_CUOTA,
+        cft.DKTT_DT_VAL_TASA, cft.DKTT_DT_NUMERO_UNICO, cft.DKTT_DT_TIPO_MONEDA,
+        cft.DKTT_DT_ID_RETAILER_RE, cft.DKTT_DT_COD_SERVICIO,
+        cft.DKTT_DT_VCI, cft.DKTT_MES_GRACIA, cft.DKTT_PERIODO_GRACIA,
         REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+')
-    FROM 
-        CUADRATURA_FILE_TBK cft
-    JOIN 
-        proceso_cupon p ON cft.ID = p.id_cuadratura
-    WHERE 
-        cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
-        AND cft.DKTT_DT_TRAN_DAT = :fecha
-        AND cft.TIPO_TRANSACCION = 'CCN'
+      FROM CUADRATURA_FILE_TBK cft
+      JOIN proceso_cupon p ON cft.ID = p.id_cuadratura
+      LEFT JOIN (
+        SELECT pa_nro_operacion, MAX(pade_tipo_documento) AS pade_tipo_documento
+        FROM pop_pagos_detalle_temp_sap
+        GROUP BY pa_nro_operacion
+      ) pagos ON (
+        (REGEXP_LIKE(TRIM(cft.DKTT_DT_NUMERO_UNICO), '^[0-9]*[1-9][0-9]*$')
+          AND TRIM(cft.DKTT_DT_NUMERO_UNICO) = pagos.pa_nro_operacion)
+        OR
+        (REGEXP_LIKE(TRIM(cft.DSK_ID_NRO_UNICO), '^[0-9]*[1-9][0-9]*$')
+          AND TRIM(cft.DSK_ID_NRO_UNICO) = pagos.pa_nro_operacion)
+      )
+      WHERE cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
+      AND cft.DKTT_DT_TRAN_DAT = :fecha
+      AND cft.TIPO_TRANSACCION = 'CCN'
       ${perfilCondition}`;
-    await conn.execute(moverCreditosSql, { fecha: fecha }, { autoCommit: false });
 
+    // await conn.execute(moverCreditosSql, { fecha }, { autoCommit: false });
+
+    // ===============================
+    // 🟠 INSERT CDN (comentado)
+    // ===============================
     const moverDebitosSql = `
       INSERT INTO CDN_TBK_HISTORICO (
-      ID_CDN, DSK_DT_REG, DSK_TYP, DSK_TC, DSK_TRAN_DAT, DSK_TRAN_TIM, 
-      DSK_ID_RETAILER, DSK_NAME_RETAILER, DSK_CARD, DSK_AMT_1, DSK_AMT_2,
-      DSK_AMT_PROPINA, DSK_RESP_CDE, DSK_APPVR_CDE, DSK_TERMN_NAME, 
-      DSK_ID_CAJA, DSK_NUM_BOLETA, DSK_FECHA_PAGO, DSK_IDENT, DSK_ID_RETAILER_2, 
-      DSK_ID_COD_SERVI, DSK_ID_NRO_UNICO, DSK_PREPAGO, TIPO_DOCUMENTO
-    )
-       SELECT
-          cft.ID,cft.DKTT_DT_REG, cft.DKTT_DT_TYP, cft.DKTT_DT_TC,
-          cft.DKTT_DT_TRAN_DAT, cft.DKTT_DT_TRAN_TIM, cft.DKTT_DT_ID_RETAILER,
-          cft.DKTT_DT_NAME_RETAILER, cft.DKTT_DT_CARD,
-          cft.DKTT_DT_AMT_1, cft.DSK2_AMT_2,
-          cft.DKTT_DT_AMT_PROPINA, cft.DKTT_DT_RESP_CDE,cft.DKTT_DT_APPRV_CDE,
-          cft.DKTT_DT_TERM_NAME, cft.DKTT_DT_ID_CAJA, cft.DKTT_DT_NUM_BOLETA,
-          cft.DKTT_DT_FECHA_VENTA, cft.DSK_IDENT,
-          cft.DKTT_DT_ID_RETAILER_RE, cft.DSK_ID_COD_SERVI,
-          cft.DSK_ID_NRO_UNICO, cft.DSK_PREPAGO,
-          REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+')
-      FROM 
-          CUADRATURA_FILE_TBK cft
-      JOIN 
-          proceso_cupon p ON cft.ID = p.id_cuadratura
-      WHERE 
-          cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
-          AND cft.DKTT_DT_TRAN_DAT = :fecha
-          AND cft.TIPO_TRANSACCION = 'CDN'
+        ID_CDN, DSK_DT_REG, DSK_TYP, DSK_TC, DSK_TRAN_DAT, DSK_TRAN_TIM, 
+        DSK_ID_RETAILER, DSK_NAME_RETAILER, DSK_CARD, DSK_AMT_1, DSK_AMT_2,
+        DSK_AMT_PROPINA, DSK_RESP_CDE, DSK_APPVR_CDE, DSK_TERMN_NAME, 
+        DSK_ID_CAJA, DSK_NUM_BOLETA, DSK_FECHA_PAGO, DSK_IDENT, DSK_ID_RETAILER_2, 
+        DSK_ID_COD_SERVI, DSK_ID_NRO_UNICO, DSK_PREPAGO, TIPO_DOCUMENTO
+      )
+      SELECT
+        cft.ID, cft.DKTT_DT_REG, cft.DKTT_DT_TYP, cft.DKTT_DT_TC,
+        cft.DKTT_DT_TRAN_DAT, cft.DKTT_DT_TRAN_TIM, cft.DKTT_DT_ID_RETAILER,
+        cft.DKTT_DT_NAME_RETAILER, cft.DKTT_DT_CARD,
+        cft.DKTT_DT_AMT_1, cft.DSK2_AMT_2,
+        cft.DKTT_DT_AMT_PROPINA, cft.DKTT_DT_RESP_CDE, cft.DKTT_DT_APPRV_CDE,
+        cft.DKTT_DT_TERM_NAME, cft.DKTT_DT_ID_CAJA, cft.DKTT_DT_NUM_BOLETA,
+        cft.DKTT_DT_FECHA_VENTA, cft.DSK_IDENT,
+        cft.DKTT_DT_ID_RETAILER_RE, cft.DSK_ID_COD_SERVI,
+        cft.DSK_ID_NRO_UNICO, cft.DSK_PREPAGO,
+        REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+')
+      FROM CUADRATURA_FILE_TBK cft
+      JOIN proceso_cupon p ON cft.ID = p.id_cuadratura
+      LEFT JOIN (
+        SELECT pa_nro_operacion, MAX(pade_tipo_documento) AS pade_tipo_documento
+        FROM pop_pagos_detalle_temp_sap
+        GROUP BY pa_nro_operacion
+      ) pagos ON (
+        (REGEXP_LIKE(TRIM(cft.DKTT_DT_NUMERO_UNICO), '^[0-9]*[1-9][0-9]*$')
+          AND TRIM(cft.DKTT_DT_NUMERO_UNICO) = pagos.pa_nro_operacion)
+        OR
+        (REGEXP_LIKE(TRIM(cft.DSK_ID_NRO_UNICO), '^[0-9]*[1-9][0-9]*$')
+          AND TRIM(cft.DSK_ID_NRO_UNICO) = pagos.pa_nro_operacion)
+      )
+      WHERE cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
+      AND cft.DKTT_DT_TRAN_DAT = :fecha
+      AND cft.TIPO_TRANSACCION = 'CDN'
       ${perfilCondition}`;
-    await conn.execute(moverDebitosSql, { fecha: fecha }, { autoCommit: false });
 
-    const deleteResult = await conn.execute(
-      `DELETE FROM CUADRATURA_FILE_TBK
-        WHERE STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
-          AND DKTT_DT_TRAN_DAT = :fecha
-           ${perfilCondition}`,
-      { fecha: fecha },
-      { autoCommit: false }
-    );
+    // await conn.execute(moverDebitosSql, { fecha }, { autoCommit: false });
+
+    // ===============================
+    // 🔴 DELETE (comentado)
+    // ===============================
+    const deleteSql = `
+      DELETE FROM CUADRATURA_FILE_TBK cft
+      WHERE cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
+      AND cft.DKTT_DT_TRAN_DAT = :fecha
+      ${perfilCondition}
+    `;
+
+    // const deleteResult = await conn.execute(deleteSql, { fecha }, { autoCommit: false });
+    // console.log(`🟡 Registros eliminados: ${deleteResult.rowsAffected}`);
 
     await conn.commit();
-    return { ok: true, cant: cant };
+
+    return { ok: true, cant };
   } catch (e) {
     try {
       await conn.rollback();
