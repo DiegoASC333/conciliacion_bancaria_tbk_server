@@ -16,7 +16,7 @@ function parseCDN(line) {
     DKTT_DT_TERM_NAME: line.substring(117, 133).trim(), // 16
     DKTT_DT_ID_CAJA: line.substring(133, 149).trim(), // 16
     DKTT_DT_NUM_BOLETA: line.substring(149, 159).trim(), // 10
-    DKTT_DT_FECHA_VENTA: line.substring(159, 165).trim() || null, // 6
+    DKTT_DT_FECHA_PAGO: line.substring(159, 165).trim() || null, // 6 cambiar a fecha_pago
     DSK_IDENT: line.substring(165, 167).trim(), // 2
     DKTT_DT_ID_RETAILER_RE: Number(line.substring(167, 175).trim()) || null, // 8
     DSK_ID_COD_SERVI: line.substring(175, 195).trim(), // 20

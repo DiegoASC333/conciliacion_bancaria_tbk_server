@@ -7,30 +7,31 @@ const API_KEY = 'e094aebebd85581d08c57bf20d6163a1';
 
 async function getStatusDiarioCuadratura({ fecha, perfil }) {
   const connection = await getConnection();
+  const binds = { fecha }; // Objeto de binds inicial
 
-  // 🔹 Lógica de condición dinámica según perfil
+  // 🔹 Lógica de condición dinámica según perfil con fallback
   let condicionPerfil = '';
   if (perfil) {
-    const perfilUpper = perfil.toUpperCase();
-    if (perfilUpper === 'SD') {
-      condicionPerfil = `
-        AND NVL(
-              CASE
+    const columnaCentroCosto = 'c.centro_costo';
+
+    // usando la nueva lógica de fallback.
+    const expresionPerfilEfectivo = `
+        NVL(
+            -- 1. Lógica principal: basada en el documento SAP si existe.
+            CASE
                 WHEN p.pade_tipo_documento = 'FA' THEN 'SD'
                 WHEN p.pade_tipo_documento IS NOT NULL THEN 'FICA'
-              END, 'FICA'
-            ) = 'SD'
-      `;
-    } else if (perfilUpper === 'FICA') {
-      condicionPerfil = `
-        AND NVL(
-              CASE
-                WHEN p.pade_tipo_documento = 'FA' THEN 'SD'
-                WHEN p.pade_tipo_documento IS NOT NULL THEN 'FICA'
-              END, 'FICA'
-            ) = 'FICA'
-      `;
-    }
+            END,
+            -- 2. Lógica de fallback: si no hay documento SAP, usa el centro de costo.
+            CASE
+                WHEN ${columnaCentroCosto} = 'SD' THEN 'SD'
+                ELSE 'FICA'
+            END
+        )
+    `;
+
+    condicionPerfil = `AND ${expresionPerfilEfectivo} = :perfil`;
+    binds.perfil = perfil.toUpperCase();
   }
 
   const sqlAprobados = `
@@ -51,7 +52,7 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
     )
     WHERE c.DKTT_DT_TRAN_DAT = :fecha
       AND c.DKTT_DT_ID_RETAILER NOT IN (597048211418, 28208820, 48211418, 597028208820)
-      ${condicionPerfil}
+      ${condicionPerfil} -- La condición dinámica se inyecta aquí
   `;
 
   const sqlOtros = `
@@ -69,11 +70,10 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
 
   try {
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
-    const binds = { fecha };
 
     const [resAprobados, resOtros] = await Promise.all([
       connection.execute(sqlAprobados, binds, options),
-      connection.execute(sqlOtros, binds, options),
+      connection.execute(sqlOtros, { fecha }, options),
     ]);
 
     const rAprobados = resAprobados.rows?.[0] || {};
@@ -135,11 +135,24 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
 
     if (estadoIncluyeEncontrado && perfil) {
       const columnaTipoDocSap = 'sap.pade_tipo_documento';
+      const columnaCentroCosto = 'c.centro_costo';
 
       if (perfil.toUpperCase() === 'FICA') {
-        conditions.push(`(${columnaTipoDocSap} NOT IN ('FA') OR ${columnaTipoDocSap} IS NULL)`);
+        conditions.push(`(
+            -- Condición 1: El registro existe en SAP y su tipo de documento NO es 'FA'.
+            (${columnaTipoDocSap} IS NOT NULL AND ${columnaTipoDocSap} != 'FA')
+            OR
+            -- Condición 2 (Fallback): No existe en SAP Y su centro de costo NO es 'SD'.
+            (${columnaTipoDocSap} IS NULL AND ${columnaCentroCosto} != 'SD')
+        )`);
       } else if (perfil.toUpperCase() === 'SD') {
-        conditions.push(`${columnaTipoDocSap} IN ('FA')`);
+        conditions.push(`(
+            -- Condición 1: El registro existe en SAP y su tipo de documento ES 'FA'.
+            ${columnaTipoDocSap} = 'FA'
+            OR
+            -- Condición 2 (Fallback): No existe en SAP Y su centro de costo ES 'SD'.
+            (${columnaTipoDocSap} IS NULL AND ${columnaCentroCosto} = 'SD')
+        )`);
       }
     }
     /**Lógica de perfil*/
@@ -158,7 +171,7 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
 
     const cuponExpr = `
       CASE
-        WHEN ${isValid('c.DSK_ID_NRO_UNICO')}     THEN LTRIM(TRIM(c.DSK_ID_NRO_UNICO), '0')
+        WHEN ${isValid('c.DSK_ID_NRO_UNICO')}THEN LTRIM(TRIM(c.DSK_ID_NRO_UNICO), '0')
         WHEN ${isValid('c.DKTT_DT_NUMERO_UNICO')} THEN LTRIM(TRIM(c.DKTT_DT_NUMERO_UNICO), '0')
         WHEN TRIM(c.DKTT_DT_APPRV_CDE) IS NOT NULL THEN TRIM(c.DKTT_DT_APPRV_CDE)
         ELSE NULL
