@@ -46,7 +46,7 @@ async function enviarATesoreriaSoloSiSinPendientes({
         FROM pop_pagos_detalle_temp_sap
         GROUP BY pa_nro_operacion
       ) pagos ON TO_CHAR(pagos.pa_nro_operacion) = p.cupon_limpio
-      WHERE cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
+      WHERE cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','PROCESADO')
       AND cft.DKTT_DT_TRAN_DAT = :fecha
       ${perfilCondition}
     `;

@@ -30,8 +30,8 @@ const getStatusCuadratura = async (req, res) => {
 const listarporTipo = async (req, res) => {
   const tipo_flag = {
     aprobados: ['ENCONTRADO'],
-    rechazados: ['NO EXISTE', 'PENDIENTE'],
-    reprocesados: ['REPROCESO', 'RE-PROCESADO'],
+    rechazados: ['NO EXISTE', 'PENDIENTE', 'REPROCESO'],
+    reprocesados: ['PROCESADO'],
     total: null,
   };
 

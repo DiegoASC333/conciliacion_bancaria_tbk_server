@@ -51,10 +51,10 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
     SELECT
       COUNT(*) AS TOTAL_DIARIO,
       SUM(TRUNC(DKTT_DT_AMT_1 / 100)) AS MONTO_TOTAL_DIARIO,
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE') THEN 1 ELSE 0 END) AS RECHAZADOS_DIARIO,
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE') THEN TRUNC(DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_RECHAZADOS,
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN 1 ELSE 0 END) AS REPROCESADOS_DIARIO,
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('REPROCESO','RE-PROCESADO') THEN TRUNC(DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_REPROCESADOS
+      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE','REPROCESO') THEN 1 ELSE 0 END) AS RECHAZADOS_DIARIO,
+      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE','REPROCESO') THEN TRUNC(DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_RECHAZADOS,
+      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('PROCESADO') THEN 1 ELSE 0 END) AS REPROCESADOS_DIARIO,
+      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('PROCESADO') THEN TRUNC(DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_REPROCESADOS
     FROM CUADRATURA_FILE_TBK
     WHERE DKTT_DT_TRAN_DAT = :fecha
       AND DKTT_DT_ID_RETAILER NOT IN (597048211418, 28208820, 48211418, 597028208820)
@@ -152,37 +152,38 @@ async function listarPorTipo({ fecha, estados, validarCupon = false, tipoTransac
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const sql = `
-      SELECT DISTINCT
-        c.id AS ID,
-        p.cupon_limpio as cupon, 
-        p.rut AS RUT,
-        c.NOMBRE_CLIENTE AS NOMBRE,
-        TRUNC(c.DKTT_DT_AMT_1 / 100) AS MONTO_TRANSACCION,
-        COALESCE(c.DKTT_DT_CANTI_CUOTAS, 0) AS CUOTAS,
-        CASE
-            WHEN c.tipo_transaccion IN ('CCN', 'CDN') AND REGEXP_LIKE(TRIM(c.DKTT_DT_FECHA_PAGO), '^[0-9]{6}$')
-            THEN TO_CHAR(TO_DATE(TRIM(c.DKTT_DT_FECHA_PAGO), 'RRMMDD'), 'YYYYMMDD')
-            ELSE NULL
-        END AS FECHA_ABONO,
-        CASE
-            WHEN REGEXP_LIKE(TRIM(c.DKTT_DT_TRAN_DAT), '^[0-9]{6}$')
-            THEN TO_CHAR(TO_DATE(TRIM(c.DKTT_DT_TRAN_DAT), 'RRMMDD'), 'YYYYMMDD')
-        END AS FECHA_VENTA,
-        CASE
-            WHEN c.tipo_transaccion = 'CCN' THEN 'Crédito'
-            WHEN c.tipo_transaccion = 'CDN' THEN 'Débito'
-            ELSE c.tipo_transaccion
-        END AS TIPO_TRANSACCION,
-        CASE
-            WHEN REGEXP_LIKE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), '^[0-9]{8}$')
-            THEN TO_CHAR(TO_DATE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), 'YYYYMMDD'), 'DD/MM/YYYY')
-            ELSE NULL
-        END AS FECHA_VENCIMIENTO,
-        JSON_VALUE(p.respuesta, '$.data[0].NOMBRE_CARRERA' NULL ON ERROR) AS NOMBRE_CARRERA,
-        JSON_VALUE(p.respuesta, '$.data[0].CARRERA' NULL ON ERROR) AS CARRERA,
-        JSON_VALUE(p.respuesta, '$.data[0].TIPO_DOCUMENTO' NULL ON ERROR) AS TIPO_DOCUMENTO,
-        REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+') AS CODIGO_EXPLICATIVO,
-        sap.pade_tipo_documento AS TIPO_DOCUMENTO_SAP
+      SELECT
+          c.id AS ID,
+          MAX(p.cupon_limpio) as cupon,
+          MAX(p.rut) AS RUT,
+          c.NOMBRE_CLIENTE AS NOMBRE,
+          TRUNC(c.DKTT_DT_AMT_1 / 100) AS MONTO_TRANSACCION,
+          COALESCE(c.DKTT_DT_CANTI_CUOTAS, 0) AS CUOTAS,
+          CASE
+              WHEN c.tipo_transaccion IN ('CCN', 'CDN') AND REGEXP_LIKE(TRIM(c.DKTT_DT_FECHA_PAGO), '^[0-9]{6}$')
+              THEN TO_CHAR(TO_DATE(TRIM(c.DKTT_DT_FECHA_PAGO), 'RRMMDD'), 'YYYYMMDD')
+              ELSE NULL
+          END AS FECHA_ABONO,
+          CASE
+              WHEN REGEXP_LIKE(TRIM(c.DKTT_DT_TRAN_DAT), '^[0-9]{6}$')
+              THEN TO_CHAR(TO_DATE(TRIM(c.DKTT_DT_TRAN_DAT), 'RRMMDD'), 'YYYYMMDD')
+          END AS FECHA_VENTA,
+          CASE
+              WHEN c.tipo_transaccion = 'CCN' THEN 'Crédito'
+              WHEN c.tipo_transaccion = 'CDN' THEN 'Débito'
+              ELSE c.tipo_transaccion
+          END AS TIPO_TRANSACCION,
+          MAX(CASE
+              WHEN REGEXP_LIKE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), '^[0-9]{8}$')
+              THEN TO_CHAR(TO_DATE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), 'YYYYMMDD'), 'DD/MM/YYYY')
+              ELSE NULL
+          END) AS FECHA_VENCIMIENTO,
+          MAX(JSON_VALUE(p.respuesta, '$.data[0].NOMBRE_CARRERA' NULL ON ERROR)) AS NOMBRE_CARRERA,
+          MAX(JSON_VALUE(p.respuesta, '$.data[0].CARRERA' NULL ON ERROR)) AS CARRERA,
+          MAX(JSON_VALUE(p.respuesta, '$.data[0].TIPO_DOCUMENTO' NULL ON ERROR)) AS TIPO_DOCUMENTO,
+          MAX(REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+')) AS CODIGO_EXPLICATIVO,
+          MAX(sap.pade_tipo_documento) AS TIPO_DOCUMENTO_SAP,
+          c.STATUS_SAP_REGISTER AS ESTADO
       FROM
           cuadratura_file_tbk c
       LEFT JOIN proceso_cupon p ON c.id = p.id_cuadratura 
@@ -198,6 +199,15 @@ async function listarPorTipo({ fecha, estados, validarCupon = false, tipoTransac
       LEFT JOIN
           CENTRO_CC cfg ON c.centro_costo = cfg.centro_cc
       ${whereClause}
+      GROUP BY
+          c.id,
+          c.NOMBRE_CLIENTE,
+          c.DKTT_DT_AMT_1,
+          c.DKTT_DT_CANTI_CUOTAS,
+          c.tipo_transaccion,
+          c.DKTT_DT_FECHA_PAGO,
+          c.DKTT_DT_TRAN_DAT,
+          c.STATUS_SAP_REGISTER
     `;
 
     const res = await conn.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
@@ -208,7 +218,6 @@ async function listarPorTipo({ fecha, estados, validarCupon = false, tipoTransac
         ? Buffer.from(fila.NOMBRE_CARRERA, 'latin1').toString('utf8').trim()
         : 'No encontrado',
     }));
-
     return filasLimpias;
   } finally {
     try {
