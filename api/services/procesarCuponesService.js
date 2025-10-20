@@ -2,15 +2,25 @@
 const { getConnection } = require('../config/utils');
 const oracledb = require('oracledb');
 
-/**
- * Lee los cupones de la tabla CUADRATURA_FILE_TBK e inserta solo los cupones existentes
- * y válidos, priorizando débito/crédito y usando la columna de respaldo si es necesario.
- *
- * @param {string} tablaDestino - Nombre de la tabla donde se insertarán los cupones.
- * @returns {Promise<object>} Objeto con el resultado de la operación.
- */
 async function procesarCupones(tablaDestino = 'PROCESO_CUPON') {
   let connection;
+
+  const esCuponNumericoValido = (cuponStr) => {
+    // 1. Verificar que sea un string no nulo y no vacío.
+    if (!cuponStr || typeof cuponStr !== 'string' || cuponStr.trim() === '') {
+      return false;
+    }
+    // 2. Usar una expresión regular para asegurar que solo contenga dígitos.
+    const soloNumerosRegex = /^[0-9]+$/;
+    if (!soloNumerosRegex.test(cuponStr)) {
+      return false;
+    }
+    // 3. Convertir a número y verificar que no sea 0 (esto elimina "0", "00", "0000", etc.).
+    if (Number(cuponStr) <= 0) {
+      return false;
+    }
+    return true;
+  };
 
   try {
     connection = await getConnection();
@@ -20,7 +30,7 @@ async function procesarCupones(tablaDestino = 'PROCESO_CUPON') {
       SELECT
         ID AS ID_CUADRATURA,
         DKTT_DT_TRAN_DAT AS FECHA, 
-        TIPO_TRANSACCION ,
+        TIPO_TRANSACCION,
         DSK_ID_NRO_UNICO AS CUPON_DEBITO,
         DKTT_DT_NUMERO_UNICO AS CUPON_CREDITO,
         DKTT_DT_APPRV_CDE AS CUPON_CAJA
@@ -47,18 +57,17 @@ async function procesarCupones(tablaDestino = 'PROCESO_CUPON') {
       let cuponValor = null;
       let tipoCupon = null;
 
-      const esValido = (valor) => valor && !isNaN(valor) && Number(valor) > 0;
-
-      // 1. Prioridad alta: cupón de crédito (CCN)
-      if (fila.TIPO_TRANSACCION === 'CCN' && esValido(fila.CUPON_CREDITO)) {
+      // LÓGICA DE PRIORIDAD ACTUALIZADA CON LAS NUEVAS VALIDACIONES
+      // 1. Prioridad alta: cupón de crédito (CCN), debe ser numérico y válido.
+      if (fila.TIPO_TRANSACCION === 'CCN' && esCuponNumericoValido(fila.CUPON_CREDITO)) {
         cuponValor = fila.CUPON_CREDITO;
         tipoCupon = 'CCN';
-        // 2. Prioridad media: cupón de débito (CDN)
-      } else if (fila.TIPO_TRANSACCION === 'CDN' && esValido(fila.CUPON_DEBITO)) {
+        // 2. Prioridad media: cupón de débito (CDN), debe ser numérico y válido.
+      } else if (fila.TIPO_TRANSACCION === 'CDN' && esCuponNumericoValido(fila.CUPON_DEBITO)) {
         cuponValor = fila.CUPON_DEBITO;
         tipoCupon = 'CDN';
-        // 3. Prioridad baja: cupón de respaldo si no hay débito ni crédito
-      } else if (fila.CUPON_CAJA) {
+        // 3. Prioridad baja: cupón de respaldo (CAJA), solo necesita existir (puede ser alfanumérico).
+      } else if (fila.CUPON_CAJA && fila.CUPON_CAJA.trim() !== '') {
         cuponValor = fila.CUPON_CAJA;
         tipoCupon = 'CAJA';
       }
@@ -78,14 +87,6 @@ async function procesarCupones(tablaDestino = 'PROCESO_CUPON') {
       console.log('No se encontraron cupones válidos para insertar.');
       return { exito: true, cantidad: 0, mensaje: 'No se encontraron cupones válidos.' };
     }
-
-    // Armar y ejecutar la consulta de inserción.
-    /*
-    const sqlInsert = `
-      INSERT INTO ${tablaDestino} (ID,ID_CUADRATURA, CUPON, FECHA, TIPO_TRANSACCION)
-      VALUES (SEQ_CUPONES_ID.NEXTVAL, :ID, :CUPON, :FECHA, :TIPO_TRANSACCION)
-    `;
-    */
     const sqlMerge = `
       MERGE INTO ${tablaDestino} D
       USING (

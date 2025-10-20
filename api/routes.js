@@ -12,8 +12,11 @@ const { procesarArchivoPorNombre } = require('./controllers/procesarArchivoManua
 const { procesarArchivosPorFecha } = require('./controllers/procesarxFechasController.js');
 const { procesarArchivosRemotos } = require('./controllers/procesarDatGzController.js');
 const { procesarArchivosRemotosAutomatico } = require('./controllers/procesoActualController.js');
-const { getStatusCuadratura } = require('./controllers/statusCuadraturaController.js');
-const { listarporTipo } = require('./controllers/statusCuadraturaController.js');
+const {
+  getStatusCuadratura,
+  listarporTipo,
+  exportarReporteCompletoExcel,
+} = require('./controllers/statusCuadraturaController.js');
 const { reprocesoCuponController } = require('./controllers/reprocesoCuponController.js');
 const {
   postEnviarTesoreria,
@@ -51,6 +54,7 @@ router.post('/cartola-tbk', getCartolaTesoreriaController); //obtener cartola
 router.post('/historial-rut', getDataHistorialRut); // obtener data de cartola por rut
 router.post('/liquidacion-excel', getLiquidacionxls); //obtener excel de liquidaciones
 router.post('/cartola-excel', getCartolaxls); //obtener excel de cartola
+router.post('/exportar-excel-completo', exportarReporteCompletoExcel); // excel para obtener cuadratura
 router.post('/cartola-mock', getDataMock); //obtener data de mock
 router.get('/cuadratura/validacion/fechas-anteriores/:fecha', validarFechasAnteriores); // obtener fechas anteriores a la indicada
 router.post('/validar', validarLiquidacionController);

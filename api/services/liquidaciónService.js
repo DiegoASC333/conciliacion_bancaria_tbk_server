@@ -71,6 +71,58 @@ async function getLiquidacionTotales({ tipo, startLCN, startLDN }) {
   }
 }
 
+async function getLiquidacionTotalesPorDocumento({ tipo, startLCN, startLDN }) {
+  const connection = await getConnection();
+  try {
+    const tipoUpper = (tipo || '').toUpperCase();
+
+    let where = '';
+    let binds = {};
+
+    if (tipoUpper === 'LCN') {
+      where = "TIPO_TRANSACCION = 'LCN' AND liq_fpago = :fecha";
+      binds.fecha = startLCN;
+    } else if (tipoUpper === 'LDN') {
+      where = "TIPO_TRANSACCION = 'LDN' AND liq_fedi = :fecha";
+      binds.fecha = startLDN;
+    }
+
+    // Lógica para el JOIN y obtener el tipo de documento
+    const isValid = (col) => `REGEXP_LIKE(TRIM(l.${col}), '^[0-9]*[1-9][0-9]*$')`;
+    let joinClause = '';
+    if (tipoUpper === 'LCN') {
+      joinClause = `LEFT JOIN CCN_TBK_HISTORICO h ON ((${isValid('liq_orpedi')} AND LTRIM(TRIM(l.liq_orpedi), '0') = LTRIM(TRIM(h.DKTT_DT_NUMERO_UNICO), '0')) OR (NOT ${isValid('liq_orpedi')} AND TRIM(l.liq_codaut) = h.DKTT_DT_APPRV_CDE))`;
+    } else if (tipoUpper === 'LDN') {
+      joinClause = `LEFT JOIN CDN_TBK_HISTORICO h ON ((${isValid('liq_nro_unico')} AND LTRIM(TRIM(l.liq_nro_unico), '0') = LTRIM(TRIM(h.DSK_ID_NRO_UNICO), '0')) OR (NOT ${isValid('liq_nro_unico')} AND TRIM(l.liq_appr) = h.DSK_APPVR_CDE))`;
+    }
+
+    const tipoDocumentoExpr = `NVL(h.tipo_documento, 'Z5')`;
+    const comercioExpr =
+      tipoUpper === 'LCN'
+        ? `CASE WHEN l.liq_cprin != 99999999 THEN TRIM(l.liq_cprin) ELSE TRIM(l.liq_numc) END`
+        : `TRIM(l.liq_numc)`;
+
+    const sql = `
+      SELECT
+        ${tipoDocumentoExpr}          AS TIPO_DOCUMENTO,
+        SUM(l.liq_monto / 100)        AS TOTAL_MONTO
+      FROM liquidacion_file_tbk l
+      ${joinClause}
+      WHERE ${where}
+      AND ${comercioExpr} NOT IN ('28208820', '48211418')
+      GROUP BY ${tipoDocumentoExpr}
+      ORDER BY TOTAL_MONTO DESC
+    `;
+
+    const res = await connection.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    return res.rows || [];
+  } finally {
+    try {
+      await connection.close();
+    } catch {}
+  }
+}
+
 async function findLatestPendingDate({ tipo, fecha }) {
   const connection = await getConnection();
   const tipoUpper = (tipo || '').toUpperCase();
@@ -122,6 +174,12 @@ async function getLiquidacionExcel({ tipo, startLCN, startLDN }, res) {
       outFormat: oracledb.OUT_FORMAT_OBJECT,
     });
 
+    if (!result.rows || result.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ mensaje: 'No existen datos para generar el archivo en la fecha seleccionada.' });
+    }
+
     await exportToExcel(result.rows, res, `liquidaciones_${tipo}.xlsx`);
   } catch (err) {
     console.error('Error exportando Excel:', err);
@@ -167,6 +225,14 @@ async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
   }
 
   try {
+    //    Le pasamos la conexión existente para que sea parte de la transacción.
+    await verificarValidacionDAFE({
+      tipo: tipoUpper,
+      startLCN: fechaPago_LCN,
+      startLDN: fechaEdi_LDN,
+      connection,
+    });
+
     const countSql = `SELECT COUNT(*) AS CANT FROM LIQUIDACION_FILE_TBK l ${whereClause}`;
     const countResult = await connection.execute(countSql, binds, {
       outFormat: oracledb.OUT_FORMAT_OBJECT,
@@ -229,9 +295,6 @@ async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
 
     const moveResult = await connection.execute(moverDatosSql, binds, { autoCommit: false });
 
-    console.log('SQL moverDatosSql:', moverDatosSql);
-    console.log('Binds:', binds);
-
     const deleteSql = `DELETE FROM LIQUIDACION_FILE_TBK l ${whereClause}`;
     await connection.execute(deleteSql, binds, { autoCommit: false });
 
@@ -253,10 +316,42 @@ async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
   }
 }
 
+async function verificarValidacionDAFE({ tipo, startLCN, startLDN, connection }) {
+  const { sql: baseSql, binds } = buildLiquidacionQuery({ tipo, startLCN, startLDN });
+
+  const validationSql = `
+    SELECT COUNT(*) AS PENDIENTES_DAFE
+    FROM (
+      ${baseSql}
+    )
+    WHERE
+      TIPO_DOCUMENTO != 'Z5' AND DAFE = 'NO'
+  `;
+
+  try {
+    const result = await connection.execute(validationSql, binds, {
+      outFormat: oracledb.OUT_FORMAT_OBJECT,
+    });
+
+    const pendientes = result.rows[0]?.PENDIENTES_DAFE ?? 0;
+
+    if (pendientes > 0) {
+      throw {
+        status: 409,
+        message: `No se pueden guardar las liquidaciones. Existen ${pendientes} documento(s) que requieren validación DAFE.`,
+      };
+    }
+  } catch (error) {
+    console.error('Error en la validación DAFE:', error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   getLiquidacion,
   getLiquidacionTotales,
   getLiquidacionExcel,
   guardarLiquidacionesHistoricas,
+  getLiquidacionTotalesPorDocumento,
   findLatestPendingDate,
 };

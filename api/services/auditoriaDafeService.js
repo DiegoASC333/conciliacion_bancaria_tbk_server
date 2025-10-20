@@ -15,45 +15,43 @@ async function enviarATesoreriaSoloSiSinPendientes({
 
     let perfilCondition = '';
     if (perfil) {
-      const columnaCentroCosto = 'cft.centro_costo';
-
+      // --- 1. LÓGICA DE PERFIL ACTUALIZADA A LA VERSIÓN FINAL DE 3 NIVELES ---
       const expresionPerfilEfectivo = `
-          NVL(
-              -- 1. Lógica principal: basada en el documento SAP si existe.
-              CASE
-                  WHEN pagos.pade_tipo_documento = 'FA' THEN 'SD'
-                  WHEN pagos.pade_tipo_documento IS NOT NULL THEN 'FICA'
-              END,
-              -- 2. Lógica de fallback: si no hay documento SAP, usa el centro de costo.
-              CASE
-                  WHEN ${columnaCentroCosto} = 'SD' THEN 'SD'
-                  ELSE 'FICA'
-              END
-          )
-      `;
+          CASE
+              -- Prioridad 1: El centro de costo existe en la tabla de configuración SD (alias 'cfg').
+              WHEN cfg.centro_cc IS NOT NULL THEN 'SD'
+              
+              -- Prioridad 2: El documento SAP es 'FA' (alias 'pagos').
+              WHEN pagos.pade_tipo_documento = 'FA' THEN 'SD'
 
+              -- Prioridad 3 (Caso Extremo): El campo CARRERA en el JSON es 'SD' (alias 'p').
+              WHEN JSON_VALUE(p.respuesta, '$.data[0].CARRERA' NULL ON ERROR) = 'SD' THEN 'SD'
+              
+              -- Fallback final: Si no es SD por ninguna de las reglas anteriores, es FICA.
+              ELSE 'FICA'
+          END
+      `;
       perfilCondition = `AND ${expresionPerfilEfectivo} = :perfil`;
       binds.perfil = perfil.toUpperCase();
     }
 
-    const countSql = `
-      SELECT COUNT(*) AS CANT
+    const commonJoinsAndWhere = `
       FROM CUADRATURA_FILE_TBK cft
+      -- Este JOIN a proceso_cupon es INNER JOIN, lo cual es correcto para esta lógica
+      JOIN proceso_cupon p ON cft.ID = p.id_cuadratura
+      LEFT JOIN CENTRO_CC cfg ON cft.centro_costo = cfg.centro_cc
+      -- Reemplazamos el JOIN complejo por el nuevo estándar, más eficiente
       LEFT JOIN (
-        SELECT pa_nro_operacion, MAX(pade_tipo_documento) AS pade_tipo_documento
+        SELECT pa_nro_operacion, MIN(pade_tipo_documento) AS pade_tipo_documento
         FROM pop_pagos_detalle_temp_sap
         GROUP BY pa_nro_operacion
-      ) pagos ON (
-        (REGEXP_LIKE(TRIM(cft.DKTT_DT_NUMERO_UNICO), '^[0-9]*[1-9][0-9]*$')
-          AND TRIM(cft.DKTT_DT_NUMERO_UNICO) = pagos.pa_nro_operacion)
-        OR
-        (REGEXP_LIKE(TRIM(cft.DSK_ID_NRO_UNICO), '^[0-9]*[1-9][0-9]*$')
-          AND TRIM(cft.DSK_ID_NRO_UNICO) = pagos.pa_nro_operacion)
-      )
+      ) pagos ON TO_CHAR(pagos.pa_nro_operacion) = p.cupon_limpio
       WHERE cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
       AND cft.DKTT_DT_TRAN_DAT = :fecha
       ${perfilCondition}
     `;
+
+    const countSql = `SELECT COUNT(*) AS CANT ${commonJoinsAndWhere}`;
 
     const rAprob = await conn.execute(countSql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
     const cant = rAprob.rows[0]?.CANT ?? 0;
@@ -64,10 +62,6 @@ async function enviarATesoreriaSoloSiSinPendientes({
       const err = new Error('No hay registros aprobados para enviar en la fecha especificada.');
       err.status = 404;
       throw err;
-    }
-
-    if (cant === 0) {
-      return;
     }
 
     await conn.execute(
@@ -102,23 +96,7 @@ async function enviarATesoreriaSoloSiSinPendientes({
         cft.DKTT_DT_ID_RETAILER_RE, cft.DKTT_DT_COD_SERVICIO,
         cft.DKTT_DT_VCI, cft.DKTT_MES_GRACIA, cft.DKTT_PERIODO_GRACIA,
         REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+')
-      FROM CUADRATURA_FILE_TBK cft
-      JOIN proceso_cupon p ON cft.ID = p.id_cuadratura
-      LEFT JOIN (
-        SELECT pa_nro_operacion, MAX(pade_tipo_documento) AS pade_tipo_documento
-        FROM pop_pagos_detalle_temp_sap
-        GROUP BY pa_nro_operacion
-      ) pagos ON (
-        (REGEXP_LIKE(TRIM(cft.DKTT_DT_NUMERO_UNICO), '^[0-9]*[1-9][0-9]*$')
-          AND TRIM(cft.DKTT_DT_NUMERO_UNICO) = pagos.pa_nro_operacion)
-        OR
-        (REGEXP_LIKE(TRIM(cft.DSK_ID_NRO_UNICO), '^[0-9]*[1-9][0-9]*$')
-          AND TRIM(cft.DSK_ID_NRO_UNICO) = pagos.pa_nro_operacion)
-      )
-      WHERE cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
-      AND cft.DKTT_DT_TRAN_DAT = :fecha
-      AND cft.TIPO_TRANSACCION = 'CCN'
-      ${perfilCondition}`;
+      ${commonJoinsAndWhere} AND cft.TIPO_TRANSACCION = 'CCN'`;
 
     await conn.execute(moverCreditosSql, binds, { autoCommit: false });
 
@@ -141,47 +119,11 @@ async function enviarATesoreriaSoloSiSinPendientes({
         cft.DKTT_DT_ID_RETAILER_RE, cft.DSK_ID_COD_SERVI,
         cft.DSK_ID_NRO_UNICO, cft.DSK_PREPAGO,
         REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+')
-      FROM CUADRATURA_FILE_TBK cft
-      JOIN proceso_cupon p ON cft.ID = p.id_cuadratura
-      LEFT JOIN (
-        SELECT pa_nro_operacion, MAX(pade_tipo_documento) AS pade_tipo_documento
-        FROM pop_pagos_detalle_temp_sap
-        GROUP BY pa_nro_operacion
-      ) pagos ON (
-        (REGEXP_LIKE(TRIM(cft.DKTT_DT_NUMERO_UNICO), '^[0-9]*[1-9][0-9]*$')
-          AND TRIM(cft.DKTT_DT_NUMERO_UNICO) = pagos.pa_nro_operacion)
-        OR
-        (REGEXP_LIKE(TRIM(cft.DSK_ID_NRO_UNICO), '^[0-9]*[1-9][0-9]*$')
-          AND TRIM(cft.DSK_ID_NRO_UNICO) = pagos.pa_nro_operacion)
-      )
-      WHERE cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
-      AND cft.DKTT_DT_TRAN_DAT = :fecha
-      AND cft.TIPO_TRANSACCION = 'CDN'
-      ${perfilCondition}`;
+      ${commonJoinsAndWhere} AND cft.TIPO_TRANSACCION = 'CDN'`;
 
     await conn.execute(moverDebitosSql, binds, { autoCommit: false });
 
-    const deleteSql = `
-      DELETE FROM CUADRATURA_FILE_TBK
-      WHERE ID IN (
-        SELECT cft.ID
-        FROM CUADRATURA_FILE_TBK cft
-        LEFT JOIN (
-          SELECT pa_nro_operacion, MAX(pade_tipo_documento) AS pade_tipo_documento
-          FROM pop_pagos_detalle_temp_sap
-          GROUP BY pa_nro_operacion
-        ) pagos ON (
-          (REGEXP_LIKE(TRIM(cft.DKTT_DT_NUMERO_UNICO), '^[0-9]*[1-9][0-9]*$')
-            AND TRIM(cft.DKTT_DT_NUMERO_UNICO) = pagos.pa_nro_operacion)
-          OR
-          (REGEXP_LIKE(TRIM(cft.DSK_ID_NRO_UNICO), '^[0-9]*[1-9][0-9]*$')
-            AND TRIM(cft.DSK_ID_NRO_UNICO) = pagos.pa_nro_operacion)
-        )
-        WHERE cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','REPROCESO','RE-PROCESADO')
-        AND cft.DKTT_DT_TRAN_DAT = :fecha
-        ${perfilCondition}
-      )
-    `;
+    const deleteSql = `DELETE FROM CUADRATURA_FILE_TBK WHERE ID IN (SELECT cft.ID ${commonJoinsAndWhere})`;
 
     const deleteResult = await conn.execute(deleteSql, binds, { autoCommit: false });
 

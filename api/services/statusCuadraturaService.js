@@ -1,9 +1,8 @@
-const { getConnection } = require('../config/utils');
+const { getConnection, exportToExcel } = require('../config/utils');
 const axios = require('axios');
 const iconv = require('iconv-lite');
 const oracledb = require('oracledb');
 require('dotenv').config(); // Para cargar las variables del .env
-const API_KEY = 'e094aebebd85581d08c57bf20d6163a1';
 
 async function getStatusDiarioCuadratura({ fecha, perfil }) {
   const connection = await getConnection();
@@ -12,47 +11,40 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
   // 🔹 Lógica de condición dinámica según perfil con fallback
   let condicionPerfil = '';
   if (perfil) {
-    const columnaCentroCosto = 'c.centro_costo';
-
-    // usando la nueva lógica de fallback.
     const expresionPerfilEfectivo = `
-        NVL(
-            -- 1. Lógica principal: basada en el documento SAP si existe.
-            CASE
-                WHEN p.pade_tipo_documento = 'FA' THEN 'SD'
-                WHEN p.pade_tipo_documento IS NOT NULL THEN 'FICA'
-            END,
-            -- 2. Lógica de fallback: si no hay documento SAP, usa el centro de costo.
-            CASE
-                WHEN ${columnaCentroCosto} = 'SD' THEN 'SD'
-                ELSE 'FICA'
-            END
-        )
-    `;
+        CASE
+            -- Prioridad 1: El centro de costo existe en la tabla de configuración SD (alias 'cfg').
+            WHEN cfg.centro_cc IS NOT NULL THEN 'SD'
+            
+            -- Prioridad 2: El documento SAP es 'FA' (alias 'sap').
+            WHEN sap.pade_tipo_documento = 'FA' THEN 'SD'
 
+            -- Prioridad 3 (Caso Extremo): El campo CARRERA en el JSON es 'SD' (alias 'pc').
+            WHEN JSON_VALUE(pc.respuesta, '$.data[0].CARRERA' NULL ON ERROR) = 'SD' THEN 'SD'
+            
+            -- Fallback final: Si no es SD por ninguna de las reglas anteriores, es FICA.
+            ELSE 'FICA'
+        END
+    `;
     condicionPerfil = `AND ${expresionPerfilEfectivo} = :perfil`;
     binds.perfil = perfil.toUpperCase();
   }
 
   const sqlAprobados = `
-    SELECT
+    SELECT DISTINCT
       SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN 1 ELSE 0 END) AS APROBADOS_DIARIO,
       SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN TRUNC(c.DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_APROBADOS
     FROM CUADRATURA_FILE_TBK c
+    LEFT JOIN proceso_cupon pc ON c.id = pc.id_cuadratura
+    LEFT JOIN centro_cc cfg ON c.centro_costo = cfg.centro_cc
     LEFT JOIN (
-      SELECT pa_nro_operacion, MAX(pade_tipo_documento) AS pade_tipo_documento
+      SELECT pa_nro_operacion, MIN(pade_tipo_documento) AS pade_tipo_documento
       FROM pop_pagos_detalle_temp_sap
       GROUP BY pa_nro_operacion
-    ) p ON (
-      (REGEXP_LIKE(TRIM(c.DKTT_DT_NUMERO_UNICO), '^[0-9]*[1-9][0-9]*$')
-        AND TRIM(c.DKTT_DT_NUMERO_UNICO) = p.pa_nro_operacion)
-      OR
-      (REGEXP_LIKE(TRIM(c.DSK_ID_NRO_UNICO), '^[0-9]*[1-9][0-9]*$')
-        AND TRIM(c.DSK_ID_NRO_UNICO) = p.pa_nro_operacion)
-    )
+    ) sap ON TO_CHAR(sap.pa_nro_operacion) = pc.cupon_limpio
     WHERE c.DKTT_DT_TRAN_DAT = :fecha
-      AND c.DKTT_DT_ID_RETAILER NOT IN (597048211418, 28208820, 48211418, 597028208820)
-      ${condicionPerfil} -- La condición dinámica se inyecta aquí
+      AND c.DKTT_DT_ID_RETAILER NOT IN ('597048211418', '28208820', '48211418', '597028208820')
+      ${condicionPerfil}
   `;
 
   const sqlOtros = `
@@ -105,7 +97,7 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
   }
 }
 
-async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransaccion, perfil }) {
+async function listarPorTipo({ fecha, estados, validarCupon = false, tipoTransaccion, perfil }) {
   const conn = await getConnection();
   try {
     const binds = {};
@@ -134,167 +126,206 @@ async function listarPorTipo({ fecha, estados, validarCupon = true, tipoTransacc
       estados.some((e) => estadosQueAplicanFiltroPerfil.includes(String(e).toUpperCase()));
 
     if (estadoIncluyeEncontrado && perfil) {
-      const columnaTipoDocSap = 'sap.pade_tipo_documento';
-      const columnaCentroCosto = 'c.centro_costo';
+      const expresionPerfilEfectivo = `
+          CASE
+              -- Prioridad 1: El centro de costo existe en la tabla de configuración SD (alias 'cfg').
+              WHEN cfg.centro_cc IS NOT NULL THEN 'SD'
+              
+              -- Prioridad 2: El documento SAP es 'FA' (alias 'sap').
+              WHEN sap.pade_tipo_documento = 'FA' THEN 'SD'
 
-      if (perfil.toUpperCase() === 'FICA') {
-        conditions.push(`(
-            -- Condición 1: El registro existe en SAP y su tipo de documento NO es 'FA'.
-            (${columnaTipoDocSap} IS NOT NULL AND ${columnaTipoDocSap} != 'FA')
-            OR
-            -- Condición 2 (Fallback): No existe en SAP Y su centro de costo NO es 'SD'.
-            (${columnaTipoDocSap} IS NULL AND ${columnaCentroCosto} != 'SD')
-        )`);
-      } else if (perfil.toUpperCase() === 'SD') {
-        conditions.push(`(
-            -- Condición 1: El registro existe en SAP y su tipo de documento ES 'FA'.
-            ${columnaTipoDocSap} = 'FA'
-            OR
-            -- Condición 2 (Fallback): No existe en SAP Y su centro de costo ES 'SD'.
-            (${columnaTipoDocSap} IS NULL AND ${columnaCentroCosto} = 'SD')
-        )`);
-      }
-    }
-    /**Lógica de perfil*/
-
-    const isValid = (col) => `REGEXP_LIKE(TRIM(${col}), '^[0-9]*[1-9][0-9]*$')`;
-
-    if (validarCupon) {
-      conditions.push(
-        `( ${isValid('c.DKTT_DT_NUMERO_UNICO')} OR ${isValid('c.DSK_ID_NRO_UNICO')} OR TRIM(c.DKTT_DT_APPRV_CDE) IS NOT NULL )`
-      );
+               -- Prioridad 3 (Caso Extremo): El campo CARRERA en el JSON es 'SD' (alias 'p').
+              WHEN JSON_VALUE(p.respuesta, '$.data[0].CARRERA' NULL ON ERROR) = 'SD' THEN 'SD'
+              
+              -- Fallback final: Si no es SD por ninguna de las reglas anteriores, es FICA.
+              ELSE 'FICA'
+          END
+      `;
+      conditions.push(`${expresionPerfilEfectivo} = :perfil`);
+      binds.perfil = perfil.toUpperCase();
     }
 
-    conditions.push(`DKTT_DT_ID_RETAILER NOT IN (597048211418,28208820, 48211418,597028208820)`);
+    conditions.push(
+      `DKTT_DT_ID_RETAILER NOT IN ('597048211418', '28208820', '48211418', '597028208820')`
+    );
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    const cuponExpr = `
-      CASE
-        WHEN ${isValid('c.DSK_ID_NRO_UNICO')}THEN LTRIM(TRIM(c.DSK_ID_NRO_UNICO), '0')
-        WHEN ${isValid('c.DKTT_DT_NUMERO_UNICO')} THEN LTRIM(TRIM(c.DKTT_DT_NUMERO_UNICO), '0')
-        WHEN TRIM(c.DKTT_DT_APPRV_CDE) IS NOT NULL THEN TRIM(c.DKTT_DT_APPRV_CDE)
-        ELSE NULL
-      END
-    `;
-
     const sql = `
-    SELECT
-        c.id as ID, 
-        ${cuponExpr}                       AS CUPON,
+      SELECT DISTINCT
+        c.id AS ID,
+        p.cupon_limpio as cupon, 
         p.rut AS RUT,
-        TRUNC(c.DKTT_DT_AMT_1/100)           AS MONTO_TRANSACCION,
-        CASE 
-          WHEN c.DKTT_DT_CANTI_CUOTAS IS NULL THEN 0 
-          ELSE c.DKTT_DT_CANTI_CUOTAS 
-        END AS CUOTAS,
-        CASE 
-          WHEN REGEXP_LIKE(TRIM(c.DKTT_DT_FECHA_PAGO), '^[0-9]{6}$')
-            THEN TO_CHAR(TO_DATE(TRIM(c.DKTT_DT_FECHA_PAGO), 'RRMMDD'), 'YYYYMMDD')
-        END AS FECHA_ABONO,
-        CASE 
-          WHEN REGEXP_LIKE(TRIM(c.DKTT_DT_TRAN_DAT), '^[0-9]{6}$')
-            THEN TO_CHAR(TO_DATE(TRIM(c.DKTT_DT_TRAN_DAT), 'RRMMDD'), 'YYYYMMDD')
-        END AS FECHA_VENTA, 
+        c.NOMBRE_CLIENTE AS NOMBRE,
+        TRUNC(c.DKTT_DT_AMT_1 / 100) AS MONTO_TRANSACCION,
+        COALESCE(c.DKTT_DT_CANTI_CUOTAS, 0) AS CUOTAS,
         CASE
-          WHEN c.tipo_transaccion = 'CCN' THEN 'Crédito'
-          WHEN c.tipo_transaccion = 'CDN' THEN 'Débito'
-          ELSE c.tipo_transaccion
+            WHEN c.tipo_transaccion IN ('CCN', 'CDN') AND REGEXP_LIKE(TRIM(c.DKTT_DT_FECHA_PAGO), '^[0-9]{6}$')
+            THEN TO_CHAR(TO_DATE(TRIM(c.DKTT_DT_FECHA_PAGO), 'RRMMDD'), 'YYYYMMDD')
+            ELSE NULL
+        END AS FECHA_ABONO,
+        CASE
+            WHEN REGEXP_LIKE(TRIM(c.DKTT_DT_TRAN_DAT), '^[0-9]{6}$')
+            THEN TO_CHAR(TO_DATE(TRIM(c.DKTT_DT_TRAN_DAT), 'RRMMDD'), 'YYYYMMDD')
+        END AS FECHA_VENTA,
+        CASE
+            WHEN c.tipo_transaccion = 'CCN' THEN 'Crédito'
+            WHEN c.tipo_transaccion = 'CDN' THEN 'Débito'
+            ELSE c.tipo_transaccion
         END AS TIPO_TRANSACCION,
         CASE
-        WHEN REGEXP_LIKE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), '^[0-9]{8}$')
-          THEN TO_CHAR(TO_DATE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), 'YYYYMMDD'), 'DD/MM/YYYY')
-          ELSE NULL 
+            WHEN REGEXP_LIKE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), '^[0-9]{8}$')
+            THEN TO_CHAR(TO_DATE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), 'YYYYMMDD'), 'DD/MM/YYYY')
+            ELSE NULL
         END AS FECHA_VENCIMIENTO,
-        JSON_VALUE(p.respuesta, '$.data[0].NOMBRE_CARRERA'    NULL ON ERROR) AS NOMBRE_CARRERA,
-        JSON_VALUE(p.respuesta, '$.data[0].CARRERA'           NULL ON ERROR) AS CARRERA,
-        JSON_VALUE(p.respuesta, '$.data[0].TIPO_DOCUMENTO'    NULL ON ERROR) AS TIPO_DOCUMENTO,
+        JSON_VALUE(p.respuesta, '$.data[0].NOMBRE_CARRERA' NULL ON ERROR) AS NOMBRE_CARRERA,
+        JSON_VALUE(p.respuesta, '$.data[0].CARRERA' NULL ON ERROR) AS CARRERA,
+        JSON_VALUE(p.respuesta, '$.data[0].TIPO_DOCUMENTO' NULL ON ERROR) AS TIPO_DOCUMENTO,
         REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+') AS CODIGO_EXPLICATIVO,
         sap.pade_tipo_documento AS TIPO_DOCUMENTO_SAP
-      FROM cuadratura_file_tbk c
-      LEFT JOIN proceso_cupon p ON TO_CHAR(p.cupon) = ${cuponExpr}
+      FROM
+          cuadratura_file_tbk c
+      LEFT JOIN proceso_cupon p ON c.id = p.id_cuadratura 
       LEFT JOIN (
-          SELECT 
-              pa_nro_operacion, 
-              MIN(pade_tipo_documento) as pade_tipo_documento -- O MAX(),
-          FROM pop_pagos_detalle_temp_sap
-          GROUP BY pa_nro_operacion
-      ) sap ON TO_CHAR(sap.pa_nro_operacion) = ${cuponExpr}
+          SELECT
+              pa_nro_operacion,
+              MIN(pade_tipo_documento) AS pade_tipo_documento
+          FROM
+              pop_pagos_detalle_temp_sap
+          GROUP BY
+              pa_nro_operacion
+      ) sap ON TO_CHAR(sap.pa_nro_operacion) = p.cupon_limpio
+      LEFT JOIN
+          CENTRO_CC cfg ON c.centro_costo = cfg.centro_cc
       ${whereClause}
-      ORDER BY 
-      CASE 
-        WHEN REGEXP_LIKE(${cuponExpr}, '^[0-9]+$') THEN 1 ELSE 2 
-      END, 
-      CASE
-        WHEN REGEXP_LIKE(${cuponExpr}, '^[0-9]+$') THEN LPAD(${cuponExpr}, 20, '0')
-        ELSE ${cuponExpr}
-      END, 
-      c.date_load_bbdd DESC NULLS LAST
     `;
 
     const res = await conn.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
-    const filas = res.rows || [];
 
-    const limite = 5; // <-- Número máximo de consultas simultáneas
-    const resultados = [];
-    let index = 0;
+    const filasLimpias = (res.rows || []).map((fila) => ({
+      ...fila,
+      NOMBRE_CARRERA: fila.NOMBRE_CARRERA
+        ? Buffer.from(fila.NOMBRE_CARRERA, 'latin1').toString('utf8').trim()
+        : 'No encontrado',
+    }));
 
-    const procesarFila = async (fila) => {
-      let nombre = 'No encontrado';
-
-      const limpiarNombre = (nombre) => {
-        if (!nombre) return 'No encontrado';
-        try {
-          return Buffer.from(nombre, 'latin1').toString('utf8').trim();
-        } catch {
-          return nombre.trim();
-        }
-      };
-
-      if (fila.RUT) {
-        try {
-          const response = await axios.get(
-            `https://api.utalca.cl/academia/jira/consultaClienteSap/${fila.RUT}`,
-            {
-              headers: { token: API_KEY },
-              timeout: 25000,
-            }
-          );
-
-          const data = response.data;
-          const nombreCrudo = data?.nombre || 'No encontrado';
-
-          nombre = limpiarNombre(nombreCrudo);
-        } catch (error) {
-          nombre = 'Error API';
-        }
-      }
-
-      return {
-        ...fila,
-        NOMBRE: nombre,
-        NOMBRE_CARRERA: fila.NOMBRE_CARRERA
-          ? Buffer.from(fila.NOMBRE_CARRERA, 'latin1').toString('utf8').trim()
-          : 'No encontrado',
-      };
-    };
-
-    while (index < filas.length) {
-      const lote = filas.slice(index, index + limite);
-      const respuestas = await Promise.all(lote.map(procesarFila));
-      resultados.push(...respuestas);
-
-      index += limite;
-    }
-
-    return resultados;
+    return filasLimpias;
   } finally {
     try {
       await conn.close();
     } catch {}
   }
 }
+
+async function generarExcelReporteCompleto(params, res) {
+  const { fecha, perfil } = params;
+  const conn = await getConnection();
+
+  try {
+    const binds = {};
+    const conditions = [];
+
+    // 1. Condición de Fecha (se mantiene)
+    if (fecha) {
+      conditions.push(`c.DKTT_DT_TRAN_DAT = :fecha`);
+      binds.fecha = fecha;
+    }
+
+    // 2. Lógica de Perfil (se mantiene, pero sin depender de 'estados')
+    // AHORA SE APLICA SIEMPRE QUE SE ENVÍE EL PARÁMETRO 'perfil'
+    if (perfil) {
+      const expresionPerfilEfectivo = `
+          CASE
+              WHEN cfg.centro_cc IS NOT NULL THEN 'SD'
+              WHEN sap.pade_tipo_documento = 'FA' THEN 'SD'
+              WHEN JSON_VALUE(p.respuesta, '$.data[0].CARRERA' NULL ON ERROR) = 'SD' THEN 'SD'
+              ELSE 'FICA'
+          END
+      `;
+      conditions.push(`${expresionPerfilEfectivo} = :perfil`);
+      binds.perfil = perfil.toUpperCase();
+    }
+
+    // 3. Condición de Retailers Excluidos (se mantiene)
+    conditions.push(
+      `DKTT_DT_ID_RETAILER NOT IN ('597048211418', '28208820', '48211418', '597028208820')`
+    );
+
+    const whereClause = `WHERE ${conditions.join(' AND ')}`;
+
+    const sql = `
+      SELECT DISTINCT
+        c.id AS ID,
+        p.cupon_limpio as cupon, 
+        p.rut AS RUT,
+        c.NOMBRE_CLIENTE AS NOMBRE,
+        TRUNC(c.DKTT_DT_AMT_1 / 100) AS MONTO_TRANSACCION,
+        COALESCE(c.DKTT_DT_CANTI_CUOTAS, 0) AS CUOTAS,
+        CASE
+            WHEN c.tipo_transaccion IN ('CCN', 'CDN') AND REGEXP_LIKE(TRIM(c.DKTT_DT_FECHA_PAGO), '^[0-9]{6}$')
+            THEN TO_CHAR(TO_DATE(TRIM(c.DKTT_DT_FECHA_PAGO), 'RRMMDD'), 'YYYYMMDD')
+            ELSE NULL
+        END AS FECHA_ABONO,
+        CASE
+            WHEN REGEXP_LIKE(TRIM(c.DKTT_DT_TRAN_DAT), '^[0-9]{6}$')
+            THEN TO_CHAR(TO_DATE(TRIM(c.DKTT_DT_TRAN_DAT), 'RRMMDD'), 'YYYYMMDD')
+        END AS FECHA_VENTA,
+        CASE
+            WHEN c.tipo_transaccion = 'CCN' THEN 'Crédito'
+            WHEN c.tipo_transaccion = 'CDN' THEN 'Débito'
+            ELSE c.tipo_transaccion
+        END AS TIPO_TRANSACCION,
+        CASE
+            WHEN REGEXP_LIKE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), '^[0-9]{8}$')
+            THEN TO_CHAR(TO_DATE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), 'YYYYMMDD'), 'DD/MM/YYYY')
+            ELSE NULL
+        END AS FECHA_VENCIMIENTO,
+        JSON_VALUE(p.respuesta, '$.data[0].NOMBRE_CARRERA' NULL ON ERROR) AS NOMBRE_CARRERA,
+        JSON_VALUE(p.respuesta, '$.data[0].CARRERA' NULL ON ERROR) AS CARRERA,
+        JSON_VALUE(p.respuesta, '$.data[0].TIPO_DOCUMENTO' NULL ON ERROR) AS TIPO_DOCUMENTO,
+        REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+') AS CODIGO_EXPLICATIVO,
+        sap.pade_tipo_documento AS TIPO_DOCUMENTO_SAP
+      FROM
+          cuadratura_file_tbk c
+      LEFT JOIN proceso_cupon p ON c.id = p.id_cuadratura 
+      LEFT JOIN (
+          SELECT pa_nro_operacion, MIN(pade_tipo_documento) AS pade_tipo_documento
+          FROM pop_pagos_detalle_temp_sap
+          GROUP BY pa_nro_operacion
+      ) sap ON TO_CHAR(sap.pa_nro_operacion) = p.cupon_limpio
+      LEFT JOIN
+          CENTRO_CC cfg ON c.centro_costo = cfg.centro_cc
+      ${whereClause}
+    `;
+
+    const result = await conn.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+
+    const filasLimpias = (result.rows || []).map((fila) => ({
+      ...fila,
+      NOMBRE_CARRERA: fila.NOMBRE_CARRERA
+        ? Buffer.from(fila.NOMBRE_CARRERA, 'latin1').toString('utf8').trim()
+        : 'No encontrado',
+    }));
+
+    if (filasLimpias.length === 0) {
+      res.status(404).json({
+        success: false,
+        message: 'No se encontraron registros para los filtros seleccionados.',
+      });
+      return;
+    }
+
+    const nombreArchivo = `Reporte_Completo_${fecha}.xlsx`;
+    await exportToExcel(filasLimpias, res, nombreArchivo);
+  } finally {
+    try {
+      await conn.close();
+    } catch {}
+  }
+}
+
 module.exports = {
   getStatusDiarioCuadratura,
   listarPorTipo,
+  generarExcelReporteCompleto,
 };

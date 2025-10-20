@@ -2,6 +2,7 @@ const { ejecutarScriptRemoto } = require('../services/sshService');
 const {
   listarArchivosNuevos,
   descargarDat,
+
   descargarYGunzip,
   conectarSFTP,
   cerrarSFTP,
@@ -11,6 +12,7 @@ const { leerYParsearArchivoLocal } = require('../services/parserLocalAdapter');
 const { insertarRegistros, verificarArchivoProcesado } = require('../services/insertService');
 const { stripGz, cleanupTemp, obtenerFechaDesdeNombre } = require('../config/utils');
 const { ejecutarValidaCupon } = require('../services/validaCuponService');
+const { obtenerNombresSAP } = require('../services/consultaClienteService'); //servicio para consultar a cliente
 
 const procesarArchivosRemotos = async (req, res) => {
   const { fechaInicio, fechaFin } = req.body || {};
@@ -39,7 +41,6 @@ const procesarArchivosRemotos = async (req, res) => {
 
     await conectarSFTP();
 
-    // 2) Listar
     let archivos = await listarArchivosNuevos();
 
     // 3) Filtro por fechas (INCLUSIVO)
@@ -138,6 +139,18 @@ const procesarArchivosRemotos = async (req, res) => {
         postproc.validaCupon = { ok: false, error: e.message || String(e) };
         console.error('[valida_cupon] Exception:', e);
       }
+    }
+
+    try {
+      const archivosProcesados = resultados
+        .filter((r) => r.estado === 'procesado')
+        .map((r) => r.archivoUsado);
+
+      const resultadoEnriquecimiento = await obtenerNombresSAP(archivosProcesados);
+      postproc.enriquecimientoNombres = { ok: true, ...resultadoEnriquecimiento };
+    } catch (e) {
+      console.error('[enriquecimientoNombres] Exception:', e);
+      postproc.enriquecimientoNombres = { ok: false, error: e.message || String(e) };
     }
 
     res.json({

@@ -63,7 +63,7 @@ async function insertarRegistros({ tipo, registros, nombreArchivo }) {
     try {
       console.log('--- Registros a insertar ---');
       binds.forEach((registro, index) => {
-        console.log(`Registro ${index + 1}:`);
+        //console.log(`Registro ${index + 1}:`);
         Object.entries(registro).forEach(([campo, valor]) => {
           //console.log(
           //  `  ${campo}: "${valor}" (length: ${typeof valor === 'string' ? valor.length : 'n/a'})`

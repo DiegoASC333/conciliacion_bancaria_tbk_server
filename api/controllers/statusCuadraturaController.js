@@ -1,5 +1,9 @@
 // const { obtenerRangoDelDiaActual } = require('../config/utils');
-const { getStatusDiarioCuadratura, listarPorTipo } = require('../services/statusCuadraturaService');
+const {
+  getStatusDiarioCuadratura,
+  listarPorTipo,
+  generarExcelReporteCompleto,
+} = require('../services/statusCuadraturaService');
 
 const getStatusCuadratura = async (req, res) => {
   try {
@@ -63,7 +67,35 @@ const listarporTipo = async (req, res) => {
   }
 };
 
+const exportarReporteCompletoExcel = async (req, res) => {
+  try {
+    const { fecha, perfil } = req.body;
+
+    if (!fecha) {
+      return res.status(400).json({
+        success: false,
+        message: 'El parámetro "fecha" es obligatorio.',
+      });
+    }
+
+    const partesFecha = fecha.split('-');
+
+    const fechaFormateada = `${partesFecha[0].slice(-2)}${partesFecha[1]}${partesFecha[2]}`;
+
+    const params = {
+      fecha: fechaFormateada,
+      perfil: perfil,
+    };
+
+    await generarExcelReporteCompleto(params, res);
+  } catch (error) {
+    console.error('Error en controller Excel completo:', error);
+    res.status(500).json({ mensaje: 'Error al generar el archivo Excel', error: error.message });
+  }
+};
+
 module.exports = {
   getStatusCuadratura,
   listarporTipo,
+  exportarReporteCompletoExcel,
 };

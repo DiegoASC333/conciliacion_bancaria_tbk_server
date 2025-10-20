@@ -16,7 +16,6 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
       AND TO_DATE(TRIM(l.liq_fedi), 'DD/MM/RR') = TO_DATE(:fecha, 'DD/MM/RR')
     `;
 
-    //where = "l.TIPO_TRANSACCION = 'LDN' AND l.liq_fedi = :fecha";
     binds.fecha = startLDN;
   } else {
     throw new Error(`Tipo de transacción no soportado: ${tipo}`);
@@ -128,7 +127,7 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
         ELSE 1
       END AS TOTAL_CUOTAS,
       ${codAutorizacionExpr}    AS CODIGO_AUTORIZACION,
-      NVL(h.tipo_documento, 'Sin Documento') as TIPO_DOCUMENTO,
+      NVL(h.tipo_documento, 'Z5') as TIPO_DOCUMENTO,
       ${esValidoExpr}           AS DAFE
     FROM liquidacion_file_tbk l
     ${joinClause}

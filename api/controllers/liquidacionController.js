@@ -4,6 +4,7 @@ const {
   getLiquidacionExcel,
   guardarLiquidacionesHistoricas,
   findLatestPendingDate,
+  getLiquidacionTotalesPorDocumento,
 } = require('../services/liquidaciónService');
 
 const getLiquidacionController = async (req, res) => {
@@ -14,7 +15,6 @@ const getLiquidacionController = async (req, res) => {
       return res.status(400).json({ mensaje: 'Fecha no proporcionada.' });
     }
 
-    let advertencia = null;
     const pendingDate = await findLatestPendingDate({ tipo, fecha });
 
     if (pendingDate) {
@@ -38,17 +38,16 @@ const getLiquidacionController = async (req, res) => {
       // De 2025-05-28 -> 28052025
       const [yyyy, mm, dd] = fecha.split('-');
       startLCN = `${dd}${mm}${yyyy}`;
-      console.log(`Consulta LCN - fecha enviada: ${startLCN}`);
     } else if (tipo.toUpperCase() === 'LDN') {
       // De 2025-05-13 -> 13/05/25
       const [yyyy, mm, dd] = fecha.split('-');
       startLDN = `${dd}/${mm}/${yyyy.slice(2)}`;
-      console.log(`Consulta LDN - fecha enviada: ${startLDN}`);
     }
 
-    const [detalles, totales] = await Promise.all([
+    const [detalles, totales, totalesDocumento] = await Promise.all([
       getLiquidacion({ tipo, startLCN, startLDN }),
       getLiquidacionTotales({ tipo, startLCN, startLDN }),
+      getLiquidacionTotalesPorDocumento({ tipo, startLCN, startLDN }),
     ]);
 
     if (!detalles || detalles.length === 0) {
@@ -69,6 +68,7 @@ const getLiquidacionController = async (req, res) => {
       data: {
         detalles_transacciones: detalles,
         totales_por_comercio: totales,
+        totales_por_documento: totalesDocumento,
       },
     });
   } catch (error) {
@@ -83,6 +83,10 @@ const getLiquidacionController = async (req, res) => {
 async function getLiquidacionxls(req, res) {
   const { tipo, fecha } = req.body;
 
+  if (!fecha) {
+    return res.status(400).json({ mensaje: 'Debe proporcionar una fecha para generar el Excel.' });
+  }
+
   let startLCN = null;
   let startLDN = null;
 
@@ -90,12 +94,10 @@ async function getLiquidacionxls(req, res) {
     // De 2025-05-28 -> 28052025
     const [yyyy, mm, dd] = fecha.split('-');
     startLCN = `${dd}${mm}${yyyy}`;
-    console.log(`Consulta LCN - fecha enviada: ${startLCN}`);
   } else if (tipo.toUpperCase() === 'LDN') {
     // De 2025-05-13 -> 13/05/25
     const [yyyy, mm, dd] = fecha.split('-');
     startLDN = `${dd}/${mm}/${yyyy.slice(2)}`;
-    console.log(`Consulta LDN - fecha enviada: ${startLDN}`);
   }
   //const { start, end } = obtenerRangoDelDiaActual();
 
