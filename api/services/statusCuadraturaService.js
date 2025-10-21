@@ -212,12 +212,19 @@ async function listarPorTipo({ fecha, estados, validarCupon = false, tipoTransac
 
     const res = await conn.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
 
-    const filasLimpias = (res.rows || []).map((fila) => ({
-      ...fila,
-      NOMBRE_CARRERA: fila.NOMBRE_CARRERA
-        ? Buffer.from(fila.NOMBRE_CARRERA, 'latin1').toString('utf8').trim()
-        : 'No encontrado',
-    }));
+    const filasLimpias = (res.rows || []).map((fila) => {
+      const { TIPO_DOCUMENTO_SAP, ...filaParaRetornar } = fila;
+
+      const nombreCarreraCorregido = filaParaRetornar.NOMBRE_CARRERA
+        ? Buffer.from(filaParaRetornar.NOMBRE_CARRERA, 'latin1').toString('utf8').trim()
+        : 'No encontrado';
+
+      return {
+        ...filaParaRetornar,
+        NOMBRE_CARRERA: nombreCarreraCorregido,
+      };
+    });
+
     return filasLimpias;
   } finally {
     try {
