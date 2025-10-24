@@ -146,11 +146,12 @@ async function existenPendientesAnterioresA({ fecha }) {
   const conn = await getConnection();
   try {
     const estadosPendientes = ['NO EXISTE', 'PENDIENTE', 'ENCONTRADO', 'REPROCESO'];
-
+    //SE AGREGA VALIDACION PARA EVITAR COMERCIOS FSCU
     const sql = `
       SELECT DKTT_DT_TRAN_DAT AS FECHA_MAS_RECIENTE
       FROM CUADRATURA_FILE_TBK
       WHERE DKTT_DT_TRAN_DAT < :fecha
+        AND TRIM(DKTT_DT_ID_RETAILER) NOT IN ('597048211418', '28208820', '48211418', '597028208820')
         AND STATUS_SAP_REGISTER IN (${estadosPendientes.map((_, i) => `:estado${i}`).join(', ')})
       ORDER BY DKTT_DT_TRAN_DAT DESC
       FETCH FIRST 1 ROWS ONLY`;

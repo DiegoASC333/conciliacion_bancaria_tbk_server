@@ -15,21 +15,22 @@ const getLiquidacionController = async (req, res) => {
       return res.status(400).json({ mensaje: 'Fecha no proporcionada.' });
     }
 
-    const pendingDate = await findLatestPendingDate({ tipo, fecha });
+    //COMENTAR PENDIENTES MOMENTANEAMENTE PARA VISUALIZAR LIQUIDACIONES POSTERIORES
+    // const pendingDate = await findLatestPendingDate({ tipo, fecha });
 
-    if (pendingDate) {
-      const formattedPendingDate = pendingDate.toISOString().split('T')[0];
-      const mensaje = `Existen liquidaciones pendientes en la fecha ${formattedPendingDate}. Debe procesar esa fecha antes de continuar con ${fecha}.`;
+    // if (pendingDate) {
+    //   const formattedPendingDate = pendingDate.toISOString().split('T')[0];
+    //   const mensaje = `Existen liquidaciones pendientes en la fecha ${formattedPendingDate}. Debe procesar esa fecha antes de continuar con ${fecha}.`;
 
-      return res.status(409).json({
-        success: false,
-        status: 409,
-        mensaje,
-        data: {
-          fecha_pendiente: formattedPendingDate,
-        },
-      });
-    }
+    //   return res.status(409).json({
+    //     success: false,
+    //     status: 409,
+    //     mensaje,
+    //     data: {
+    //       fecha_pendiente: formattedPendingDate,
+    //     },
+    //   });
+    // }
 
     let startLCN = null;
     let startLDN = null;

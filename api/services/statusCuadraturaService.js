@@ -43,7 +43,7 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
       GROUP BY pa_nro_operacion
     ) sap ON TO_CHAR(sap.pa_nro_operacion) = pc.cupon_limpio
     WHERE c.DKTT_DT_TRAN_DAT = :fecha
-      AND c.DKTT_DT_ID_RETAILER NOT IN ('597048211418', '28208820', '48211418', '597028208820')
+      AND TRIM(c.DKTT_DT_ID_RETAILER) NOT IN ('597048211418', '28208820', '48211418', '597028208820')
       ${condicionPerfil}
   `;
 
@@ -57,7 +57,7 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
       SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('PROCESADO') THEN TRUNC(DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_REPROCESADOS
     FROM CUADRATURA_FILE_TBK
     WHERE DKTT_DT_TRAN_DAT = :fecha
-      AND DKTT_DT_ID_RETAILER NOT IN (597048211418, 28208820, 48211418, 597028208820)
+      AND TRIM(DKTT_DT_ID_RETAILER) NOT IN ('597048211418', '28208820', '48211418', '597028208820')
   `;
 
   try {
@@ -146,7 +146,7 @@ async function listarPorTipo({ fecha, estados, validarCupon = false, tipoTransac
     }
 
     conditions.push(
-      `DKTT_DT_ID_RETAILER NOT IN ('597048211418', '28208820', '48211418', '597028208820')`
+      `TRIM(c.DKTT_DT_ID_RETAILER) NOT IN ('597048211418', '28208820', '48211418', '597028208820')`
     );
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -264,7 +264,7 @@ async function generarExcelReporteCompleto(params, res) {
 
     // 3. Condición de Retailers Excluidos (se mantiene)
     conditions.push(
-      `DKTT_DT_ID_RETAILER NOT IN ('597048211418', '28208820', '48211418', '597028208820')`
+      `TRIM(c.DKTT_DT_ID_RETAILER) NOT IN ('597048211418', '28208820', '48211418', '597028208820')`
     );
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;

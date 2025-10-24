@@ -87,6 +87,7 @@ async function procesarCupones(tablaDestino = 'PROCESO_CUPON') {
       console.log('No se encontraron cupones válidos para insertar.');
       return { exito: true, cantidad: 0, mensaje: 'No se encontraron cupones válidos.' };
     }
+    //se agrega nueva validación para fecha distintas mismo cupón
     const sqlMerge = `
       MERGE INTO ${tablaDestino} D
       USING (
@@ -97,7 +98,7 @@ async function procesarCupones(tablaDestino = 'PROCESO_CUPON') {
           :TIPO_TRANSACCION AS TIPO_TRANSACCION
         FROM DUAL
       ) S
-      ON (D.CUPON = S.CUPON)
+      ON (D.CUPON = S.CUPON AND D.FECHA = S.FECHA) -- SE VALIDA POR CUPÓN Y FECHA
       WHEN NOT MATCHED THEN
       INSERT (ID, ID_CUADRATURA, CUPON, FECHA, TIPO_TRANSACCION)
       VALUES (SEQ_CUPONES_ID.NEXTVAL, S.ID_CUDARATURA, S.CUPON, S.FECHA, S.TIPO_TRANSACCION)
