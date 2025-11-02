@@ -51,7 +51,7 @@ async function getLiquidacionTotales({ tipo, startLCN, startLDN }) {
       LEFT JOIN vec_cob04.codigo_comerico c
     ON c.codigo_comerico = ${comercioExpr}
     WHERE ${where}
-    AND ${comercioExpr} NOT IN ('28208820', '48211418')
+    AND ${comercioExpr} NOT IN ('28208820', '48211418', '41246590', '41246593', '41246594')
     GROUP BY ${comercioExpr}, c.NOMBRE_COMERCIO, c.CUENTA_CORRIENTE, c.BANCO, c.CUENTA_CONTABLE, c.DESCRIPCION
     ORDER BY TOTAL_MONTO DESC
   `;
@@ -93,14 +93,19 @@ async function getLiquidacionTotalesPorDocumento({ tipo, startLCN, startLDN }) {
     if (tipoUpper === 'LCN') {
       joinClause = `LEFT JOIN CCN_TBK_HISTORICO h ON ((${isValid('liq_orpedi')} AND LTRIM(TRIM(l.liq_orpedi), '0') = LTRIM(TRIM(h.DKTT_DT_NUMERO_UNICO), '0')) OR (NOT ${isValid('liq_orpedi')} AND TRIM(l.liq_codaut) = h.DKTT_DT_APPRV_CDE))`;
     } else if (tipoUpper === 'LDN') {
-      joinClause = `LEFT JOIN CDN_TBK_HISTORICO h ON ((${isValid('liq_nro_unico')} AND LTRIM(TRIM(l.liq_nro_unico), '0') = LTRIM(TRIM(h.DSK_ID_NRO_UNICO), '0')) OR (NOT ${isValid('liq_nro_unico')} AND TRIM(l.liq_appr) = h.DSK_APPVR_CDE))`;
+      const ldn_l_dateFormat = 'DDMMRR';
+      const ldn_h_dateFormat = 'RRMMDD';
+      joinClause = `LEFT JOIN CDN_TBK_HISTORICO h ON ((${isValid('liq_nro_unico')} AND LTRIM(TRIM(l.liq_nro_unico), '0') = LTRIM(TRIM(h.DSK_ID_NRO_UNICO), '0')) OR (NOT ${isValid('liq_nro_unico')} AND TRIM(l.liq_appr) = h.DSK_APPVR_CDE))
+        AND REGEXP_LIKE(TO_CHAR(l.liq_fcom), '^[0-9]{5,6}$')
+        AND REGEXP_LIKE(TO_CHAR(h.DSK_TRAN_DAT), '^[0-9]{5,6}$')
+        AND TO_DATE(LPAD(TO_CHAR(l.liq_fcom), 6, '0'), '${ldn_l_dateFormat}') = TO_DATE(LPAD(TO_CHAR(h.DSK_TRAN_DAT), 6, '0'), '${ldn_h_dateFormat}')`;
     }
 
     const tipoDocumentoExpr = `NVL(h.tipo_documento, 'Z5')`;
     const comercioExpr =
       tipoUpper === 'LCN'
-        ? `CASE WHEN l.liq_cprin != 99999999 THEN TRIM(l.liq_cprin) ELSE TRIM(l.liq_numc) END`
-        : `TRIM(l.liq_numc)`;
+        ? `CASE WHEN l.liq_cprin != 99999999 THEN l.liq_cprin ELSE l.liq_numc END`
+        : `l.liq_numc`;
 
     const sql = `
       SELECT
@@ -109,7 +114,7 @@ async function getLiquidacionTotalesPorDocumento({ tipo, startLCN, startLDN }) {
       FROM liquidacion_file_tbk l
       ${joinClause}
       WHERE ${where}
-      AND ${comercioExpr} NOT IN ('28208820', '48211418')
+      AND ${comercioExpr} NOT IN ('28208820', '48211418', '41246590', '41246593', '41246594')
       GROUP BY ${tipoDocumentoExpr}
       ORDER BY TOTAL_MONTO DESC
     `;
@@ -208,16 +213,25 @@ async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
 
   const isValid = (col) => `REGEXP_LIKE(TRIM(l.${col}), '^[0-9]*[1-9][0-9]*$')`;
 
+  const comercioExpr =
+    tipoUpper === 'LCN'
+      ? `(CASE WHEN l.liq_cprin != 99999999 THEN l.liq_cprin ELSE l.liq_numc END)`
+      : `l.liq_numc`;
+
+  const exclusionComercios = `${comercioExpr} NOT IN ('28208820', '48211418', '41246590', '41246593', '41246594')`;
+
   if (tipoUpper === 'LCN') {
     whereClause = `
       WHERE l.TIPO_TRANSACCION = :tipo 
       AND l.liq_fpago = :fechaParam
+      AND ${exclusionComercios}
     `;
     binds = { tipo: tipoUpper, fechaParam: fechaPago_LCN };
   } else if (tipoUpper === 'LDN') {
     whereClause = `
         WHERE l.TIPO_TRANSACCION = :tipo
         AND l.liq_fedi = :fechaParam
+        AND ${exclusionComercios}
       `;
     binds = { tipo: tipoUpper, fechaParam: fechaEdi_LDN };
   } else {

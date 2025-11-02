@@ -15,7 +15,6 @@ async function enviarATesoreriaSoloSiSinPendientes({
 
     let perfilCondition = '';
     if (perfil) {
-      // --- 1. LÓGICA DE PERFIL ACTUALIZADA A LA VERSIÓN FINAL DE 3 NIVELES ---
       const expresionPerfilEfectivo = `
           CASE
               -- Prioridad 1: El centro de costo existe en la tabla de configuración SD (alias 'cfg').
@@ -37,15 +36,39 @@ async function enviarATesoreriaSoloSiSinPendientes({
 
     const commonJoinsAndWhere = `
       FROM CUADRATURA_FILE_TBK cft
-      -- Este JOIN a proceso_cupon es INNER JOIN, lo cual es correcto para esta lógica
-      JOIN proceso_cupon p ON cft.ID = p.id_cuadratura
-      LEFT JOIN CENTRO_CC cfg ON cft.centro_costo = cfg.centro_cc
-      -- Reemplazamos el JOIN complejo por el nuevo estándar, más eficiente
+      -- JOIN a 'proceso_cupon' (ya corregido)
+      JOIN (
+          SELECT
+              id_cuadratura,
+              cupon_limpio,
+              respuesta,
+              ROW_NUMBER() OVER(
+                  PARTITION BY id_cuadratura
+                  ORDER BY
+                      CASE estado
+                          WHEN 'ENCONTRADO' THEN 1
+                          WHEN 'PROCESADO' THEN 2
+                          ELSE 3
+                      END,
+                      id DESC
+              ) as rn
+          FROM proceso_cupon
+      ) p ON cft.ID = p.id_cuadratura AND p.rn = 1
+      LEFT JOIN (
+          SELECT
+              centro_cc,
+              ROW_NUMBER() OVER(
+                  PARTITION BY centro_cc
+                  ORDER BY 1
+              ) as rn_cc
+          FROM CENTRO_CC
+      ) cfg ON cft.centro_costo = cfg.centro_cc AND cfg.rn_cc = 1
       LEFT JOIN (
         SELECT pa_nro_operacion, MIN(pade_tipo_documento) AS pade_tipo_documento
         FROM pop_pagos_detalle_temp_sap
         GROUP BY pa_nro_operacion
       ) pagos ON TO_CHAR(pagos.pa_nro_operacion) = p.cupon_limpio
+      
       WHERE cft.STATUS_SAP_REGISTER IN ('ENCONTRADO','PROCESADO')
       AND cft.DKTT_DT_TRAN_DAT = :fecha
       ${perfilCondition}
@@ -55,8 +78,6 @@ async function enviarATesoreriaSoloSiSinPendientes({
 
     const rAprob = await conn.execute(countSql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
     const cant = rAprob.rows[0]?.CANT ?? 0;
-
-    console.log(`[MODO DEPURACIÓN] Se procesarían ${cant} registros para el perfil ${perfil}.`);
 
     if (cant === 0) {
       const err = new Error('No hay registros aprobados para enviar en la fecha especificada.');
@@ -115,7 +136,7 @@ async function enviarATesoreriaSoloSiSinPendientes({
         cft.DKTT_DT_AMT_1, cft.DSK2_AMT_2,
         cft.DKTT_DT_AMT_PROPINA, cft.DKTT_DT_RESP_CDE, cft.DKTT_DT_APPRV_CDE,
         cft.DKTT_DT_TERM_NAME, cft.DKTT_DT_ID_CAJA, cft.DKTT_DT_NUM_BOLETA,
-        cft.DKTT_DT_FECHA_VENTA, cft.DSK_IDENT,
+        cft.DKTT_DT_FECHA_PAGO, cft.DSK_IDENT,
         cft.DKTT_DT_ID_RETAILER_RE, cft.DSK_ID_COD_SERVI,
         cft.DSK_ID_NRO_UNICO, cft.DSK_PREPAGO,
         REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+')
@@ -179,4 +200,7 @@ async function existenPendientesAnterioresA({ fecha }) {
   }
 }
 
-module.exports = { enviarATesoreriaSoloSiSinPendientes, existenPendientesAnterioresA };
+module.exports = {
+  enviarATesoreriaSoloSiSinPendientes,
+  existenPendientesAnterioresA,
+};

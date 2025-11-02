@@ -12,13 +12,32 @@ const postEnviarTesoreria = async (req, res) => {
 
     if (!fecha) return res.status(400).json({ success: false, message: 'fecha es requerida' });
 
-    const { ok, cant } = await enviarATesoreriaSoloSiSinPendientes({
+    const validacion = await existenPendientesAnterioresA({ fecha });
+
+    if (validacion && validacion.existen) {
+      return res.status(409).json({
+        success: false,
+        status: 409,
+        message: `Existen registros pendientes (fecha más reciente: ${validacion.fechaMasReciente}). No se puede enviar a Tesorería.`,
+      });
+    }
+
+    const { ok, cant, message } = await enviarATesoreriaSoloSiSinPendientes({
       usuarioId,
       observacion,
       fecha,
       totalDiario,
       perfil,
     });
+
+    if (ok === false) {
+      return res.status(400).json({
+        success: false,
+        status: 400,
+        message: message || 'La operación de envío falló.',
+      });
+    }
+
     return res.status(200).json({
       success: true,
       status: 200,

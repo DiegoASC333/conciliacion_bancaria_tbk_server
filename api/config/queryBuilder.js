@@ -3,26 +3,25 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
 
   const isValid = (col) => `REGEXP_LIKE(TRIM(l.${col}), '^[0-9]*[1-9][0-9]*$')`;
 
+  const cuponExpr =
+    tipoUpper === 'LCN'
+      ? `CASE WHEN ${isValid('liq_orpedi')} THEN LTRIM(TRIM(l.liq_orpedi), '0') ELSE TRIM(l.liq_codaut) END`
+      : `CASE WHEN ${isValid('liq_nro_unico')} THEN LTRIM(TRIM(l.liq_nro_unico), '0') ELSE LTRIM(TRIM(l.liq_appr), '0') END`;
+
+  const nombreColumnaFechaPC = 'FECHA';
+
   let where = '';
   let binds = {};
-
-  if (tipoUpper === 'LCN') {
-    where = "l.TIPO_TRANSACCION = 'LCN' AND l.liq_fpago = :fecha";
-    binds.fecha = startLCN;
-  } else if (tipoUpper === 'LDN') {
-    where = `
-      l.TIPO_TRANSACCION = 'LDN'
-      AND REGEXP_LIKE(TRIM(l.liq_fedi), '^[0-9]{2}/[0-9]{2}/[0-9]{2}$')
-      AND TO_DATE(TRIM(l.liq_fedi), 'DD/MM/RR') = TO_DATE(:fecha, 'DD/MM/RR')
-    `;
-
-    binds.fecha = startLDN;
-  } else {
-    throw new Error(`Tipo de transacción no soportado: ${tipo}`);
-  }
-
   let joinClause = '';
+  let joinProcesoCupon = '';
+
   if (tipoUpper === 'LCN') {
+    where = `l.TIPO_TRANSACCION = 'LCN' AND l.liq_fpago = :fecha`;
+    binds.fecha = startLCN;
+
+    const lcn_l_dateFormat = 'DDMMYYYY';
+    const lcn_h_dateFormat = 'RRMMDD';
+
     joinClause = `
       LEFT JOIN CCN_TBK_HISTORICO h ON
         (
@@ -33,8 +32,30 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
           NOT ${isValid('liq_orpedi')} AND
           TRIM(l.liq_codaut) = h.DKTT_DT_APPRV_CDE 
         )
+        AND REGEXP_LIKE(TO_CHAR(l.liq_fcom), '^[0-9]{7,8}$') 
+        AND REGEXP_LIKE(TO_CHAR(h.DKTT_DT_TRAN_DAT), '^[0-9]{5,6}$')
+        AND TO_DATE(LPAD(TO_CHAR(l.liq_fcom), 8, '0'), '${lcn_l_dateFormat}') = TO_DATE(LPAD(TO_CHAR(h.DKTT_DT_TRAN_DAT), 6, '0'), '${lcn_h_dateFormat}')
+        AND l.liq_monto = h.DKTT_DT_AMT_1
+    `; //Se agrega monto para evitar problemas con cupones repetidos
+
+    joinProcesoCupon = `
+      LEFT JOIN PROCESO_CUPON pc 
+        ON LTRIM(TRIM(pc.CUPON), '0') = ${cuponExpr}
+        AND TO_CHAR(pc.${nombreColumnaFechaPC}) = TO_CHAR(h.DKTT_DT_TRAN_DAT)
+        AND pc.id_cuadratura = h.id_ccn
     `;
   } else if (tipoUpper === 'LDN') {
+    where = `
+      l.TIPO_TRANSACCION = 'LDN'
+      AND REGEXP_LIKE(TRIM(l.liq_fedi), '^[0-9]{2}/[0-9]{2}/[0-9]{2}$')
+      AND TO_DATE(TRIM(l.liq_fedi), 'DD/MM/RR') = TO_DATE(:fecha, 'DD/MM/RR')
+    `;
+
+    binds.fecha = startLDN;
+
+    const ldn_l_dateFormat = 'DDMMRR';
+    const ldn_h_dateFormat = 'RRMMDD';
+
     joinClause = `
       LEFT JOIN CDN_TBK_HISTORICO h ON
         (
@@ -45,22 +66,26 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
           NOT ${isValid('liq_nro_unico')} AND
           TRIM(l.liq_appr) = h.DSK_APPVR_CDE
         )
+        AND REGEXP_LIKE(TO_CHAR(l.liq_fcom), '^[0-9]{5,6}$')
+        AND REGEXP_LIKE(TO_CHAR(h.DSK_TRAN_DAT), '^[0-9]{5,6}$')
+        AND TO_DATE(LPAD(TO_CHAR(l.liq_fcom), 6, '0'), '${ldn_l_dateFormat}') = TO_DATE(LPAD(TO_CHAR(h.DSK_TRAN_DAT), 6, '0'), '${ldn_h_dateFormat}')
+        AND l.liq_monto = h.DSK_AMT_1 
+    `; //Se agrega monto para evitar problemas con cupones repetidos
+
+    joinProcesoCupon = `
+      LEFT JOIN PROCESO_CUPON pc 
+        ON LTRIM(TRIM(pc.CUPON), '0') = ${cuponExpr}
+        AND TO_CHAR(pc.${nombreColumnaFechaPC}) = TO_CHAR(h.DSK_TRAN_DAT)
+        AND pc.id_cuadratura = h.id_cdn
     `;
   }
-
-  const cuponExpr =
-    tipoUpper === 'LCN'
-      ? `CASE WHEN ${isValid('liq_orpedi')} THEN LTRIM(TRIM(l.liq_orpedi), '0') ELSE TRIM(l.liq_codaut) END`
-      : `CASE WHEN ${isValid('liq_nro_unico')} THEN LTRIM(TRIM(l.liq_nro_unico), '0') ELSE LTRIM(TRIM(l.liq_appr), '0') END`;
-
-  const joinProcesoCupon = ` LEFT JOIN PROCESO_CUPON pc ON LTRIM(TRIM(pc.CUPON), '0') = ${cuponExpr}`;
 
   const codAutorizacionExpr = tipoUpper === 'LCN' ? 'TRIM(l.liq_codaut)' : 'TRIM(l.liq_appr)';
 
   const comercioExpr =
     tipoUpper === 'LCN'
-      ? `CASE WHEN l.liq_cprin != 99999999 THEN TRIM(l.liq_cprin) ELSE TRIM(l.liq_numc) END`
-      : 'TRIM(l.liq_numc)';
+      ? `CASE WHEN l.liq_cprin != 99999999 THEN l.liq_cprin ELSE l.liq_numc END`
+      : `l.liq_numc`;
 
   const comisionExpr = `
     CASE
@@ -126,6 +151,7 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
         WHEN l.TIPO_TRANSACCION = 'LCN' THEN l.liq_ntc
         ELSE 1
       END AS TOTAL_CUOTAS,
+      pc.rut as RUT,
       ${codAutorizacionExpr}    AS CODIGO_AUTORIZACION,
       NVL(h.tipo_documento, 'Z5') as TIPO_DOCUMENTO,
       ${esValidoExpr}           AS DAFE
@@ -134,6 +160,7 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
     ${joinProcesoCupon}
     WHERE
     ${where}
+    AND ${comercioExpr} NOT IN ('28208820', '48211418', '41246590', '41246593', '41246594')
     ${orderBy}
   `;
 

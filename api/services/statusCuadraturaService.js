@@ -31,17 +31,44 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
   }
 
   const sqlAprobados = `
-    SELECT DISTINCT
+    SELECT
+      -- Métricas para Aprobados (ENCONTRADO)
       SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN 1 ELSE 0 END) AS APROBADOS_DIARIO,
-      SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN TRUNC(c.DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_APROBADOS
+      SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) = 'ENCONTRADO' THEN TRUNC(c.DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_APROBADOS,
+      
+      -- Nuevas Métricas para Procesados (PROCESADO)
+      SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) = 'PROCESADO' THEN 1 ELSE 0 END) AS REPROCESADOS_DIARIO,
+      SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) = 'PROCESADO' THEN TRUNC(c.DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_REPROCESADOS
+      
     FROM CUADRATURA_FILE_TBK c
-    LEFT JOIN proceso_cupon pc ON c.id = pc.id_cuadratura
+    -- Unimos a una subconsulta que garantiza una sola fila de 'proceso_cupon'
+    LEFT JOIN (
+        SELECT
+            id_cuadratura,
+            respuesta,
+            cupon_limpio,
+            ROW_NUMBER() OVER(
+                PARTITION BY id_cuadratura
+                -- --- INICIO DE LA CORRECCIÓN ---
+                -- Prioridad actualizada para manejar 'ENCONTRADO' vs 'REPROCESO'
+                ORDER BY
+                    CASE estado
+                        WHEN 'PROCESADO' THEN 1  -- 1ra Prioridad
+                        WHEN 'ENCONTRADO' THEN 2  -- 2da Prioridad
+                        ELSE 3                   -- El resto (ej. REPROCESO)
+                    END,
+                    id DESC -- Desempate por el más reciente
+                -- --- FIN DE LA CORRECCIÓN ---
+            ) as rn
+        FROM proceso_cupon
+    ) pc ON c.id = pc.id_cuadratura AND pc.rn = 1
     LEFT JOIN centro_cc cfg ON c.centro_costo = cfg.centro_cc
     LEFT JOIN (
       SELECT pa_nro_operacion, MIN(pade_tipo_documento) AS pade_tipo_documento
       FROM pop_pagos_detalle_temp_sap
       GROUP BY pa_nro_operacion
     ) sap ON TO_CHAR(sap.pa_nro_operacion) = pc.cupon_limpio
+    
     WHERE c.DKTT_DT_TRAN_DAT = :fecha
       AND TRIM(c.DKTT_DT_ID_RETAILER) NOT IN ('597048211418', '28208820', '48211418', '597028208820')
       ${condicionPerfil}
@@ -52,9 +79,7 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
       COUNT(*) AS TOTAL_DIARIO,
       SUM(TRUNC(DKTT_DT_AMT_1 / 100)) AS MONTO_TOTAL_DIARIO,
       SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE','REPROCESO') THEN 1 ELSE 0 END) AS RECHAZADOS_DIARIO,
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE','REPROCESO') THEN TRUNC(DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_RECHAZADOS,
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('PROCESADO') THEN 1 ELSE 0 END) AS REPROCESADOS_DIARIO,
-      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('PROCESADO') THEN TRUNC(DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_REPROCESADOS
+      SUM(CASE WHEN UPPER(STATUS_SAP_REGISTER) IN ('NO EXISTE', 'PENDIENTE','REPROCESO') THEN TRUNC(DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_RECHAZADOS
     FROM CUADRATURA_FILE_TBK
     WHERE DKTT_DT_TRAN_DAT = :fecha
       AND TRIM(DKTT_DT_ID_RETAILER) NOT IN ('597048211418', '28208820', '48211418', '597028208820')
@@ -82,8 +107,8 @@ async function getStatusDiarioCuadratura({ fecha, perfil }) {
       rechazados_diario: Number(rOtros.RECHAZADOS_DIARIO || 0),
       monto_rechazados: Number(rOtros.MONTO_RECHAZADOS || 0),
 
-      reprocesados_diario: Number(rOtros.REPROCESADOS_DIARIO || 0),
-      monto_reprocesados: Number(rOtros.MONTO_REPROCESADOS || 0),
+      reprocesados_diario: Number(rAprobados.REPROCESADOS_DIARIO || 0),
+      monto_reprocesados: Number(rAprobados.MONTO_REPROCESADOS || 0),
     };
   } catch (error) {
     console.error('Error en getStatusDiarioCuadratura:', error);
@@ -120,12 +145,13 @@ async function listarPorTipo({ fecha, estados, validarCupon = false, tipoTransac
     }
 
     /**Lógica de perfil */
-    const estadosQueAplicanFiltroPerfil = ['ENCONTRADO'];
-    const estadoIncluyeEncontrado =
+    const estadosQueAplicanFiltroPerfil = ['ENCONTRADO', 'PROCESADO'];
+
+    const seAplicaFiltroPerfil = // <-- Variable renombrada para claridad
       Array.isArray(estados) &&
       estados.some((e) => estadosQueAplicanFiltroPerfil.includes(String(e).toUpperCase()));
 
-    if (estadoIncluyeEncontrado && perfil) {
+    if (seAplicaFiltroPerfil && perfil) {
       const expresionPerfilEfectivo = `
           CASE
               -- Prioridad 1: El centro de costo existe en la tabla de configuración SD (alias 'cfg').
@@ -186,7 +212,26 @@ async function listarPorTipo({ fecha, estados, validarCupon = false, tipoTransac
           c.STATUS_SAP_REGISTER AS ESTADO
       FROM
           cuadratura_file_tbk c
-      LEFT JOIN proceso_cupon p ON c.id = p.id_cuadratura 
+      LEFT JOIN (
+          SELECT
+              id, -- id único de proceso_cupon
+              id_cuadratura,
+              respuesta,
+              cupon_limpio,
+              rut,
+              -- (Añadimos todas las columnas de 'p' que usa la consulta)
+              ROW_NUMBER() OVER(
+                  PARTITION BY id_cuadratura
+                  ORDER BY
+                      CASE estado
+                          WHEN 'PROCESADO' THEN 1  -- 1ra Prioridad
+                          WHEN 'ENCONTRADO' THEN 2  -- 2da Prioridad
+                          ELSE 3                   -- El resto
+                      END,
+                      id DESC -- Desempate
+              ) as rn
+          FROM proceso_cupon
+      ) p ON c.id = p.id_cuadratura AND p.rn = 1
       LEFT JOIN (
           SELECT
               pa_nro_operacion,
@@ -254,7 +299,7 @@ async function generarExcelReporteCompleto(params, res) {
           CASE
               WHEN cfg.centro_cc IS NOT NULL THEN 'SD'
               WHEN sap.pade_tipo_documento = 'FA' THEN 'SD'
-              WHEN JSON_VALUE(p.respuesta, '$.data[0].CARRERA' NULL ON ERROR) = 'SD' THEN 'SD'
+              WHEN JSON_VALUE(pc.respuesta, '$.data[0].CARRERA' NULL ON ERROR) = 'SD' THEN 'SD'
               ELSE 'FICA'
           END
       `;
@@ -272,8 +317,8 @@ async function generarExcelReporteCompleto(params, res) {
     const sql = `
       SELECT DISTINCT
         c.id AS ID,
-        p.cupon_limpio as cupon, 
-        p.rut AS RUT,
+        pc.cupon_limpio as cupon, 
+        pc.rut AS RUT,
         c.NOMBRE_CLIENTE AS NOMBRE,
         TRUNC(c.DKTT_DT_AMT_1 / 100) AS MONTO_TRANSACCION,
         COALESCE(c.DKTT_DT_CANTI_CUOTAS, 0) AS CUOTAS,
@@ -292,23 +337,38 @@ async function generarExcelReporteCompleto(params, res) {
             ELSE c.tipo_transaccion
         END AS TIPO_TRANSACCION,
         CASE
-            WHEN REGEXP_LIKE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), '^[0-9]{8}$')
-            THEN TO_CHAR(TO_DATE(JSON_VALUE(p.respuesta, '$.data[0].FECHA_VENCIMIENTO'), 'YYYYMMDD'), 'DD/MM/YYYY')
+            WHEN REGEXP_LIKE(JSON_VALUE(pc.respuesta, '$.data[0].FECHA_VENCIMIENTO'), '^[0-9]{8}$')
+            THEN TO_CHAR(TO_DATE(JSON_VALUE(pc.respuesta, '$.data[0].FECHA_VENCIMIENTO'), 'YYYYMMDD'), 'DD/MM/YYYY')
             ELSE NULL
         END AS FECHA_VENCIMIENTO,
-        JSON_VALUE(p.respuesta, '$.data[0].NOMBRE_CARRERA' NULL ON ERROR) AS NOMBRE_CARRERA,
-        JSON_VALUE(p.respuesta, '$.data[0].CARRERA' NULL ON ERROR) AS CARRERA,
-        JSON_VALUE(p.respuesta, '$.data[0].TIPO_DOCUMENTO' NULL ON ERROR) AS TIPO_DOCUMENTO,
-        REGEXP_SUBSTR(JSON_VALUE(p.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+') AS CODIGO_EXPLICATIVO,
+        JSON_VALUE(pc.respuesta, '$.data[0].NOMBRE_CARRERA' NULL ON ERROR) AS NOMBRE_CARRERA,
+        JSON_VALUE(pc.respuesta, '$.data[0].CARRERA' NULL ON ERROR) AS CARRERA,
+        JSON_VALUE(pc.respuesta, '$.data[0].TIPO_DOCUMENTO' NULL ON ERROR) AS TIPO_DOCUMENTO,
+        REGEXP_SUBSTR(JSON_VALUE(pc.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+') AS CODIGO_EXPLICATIVO,
         sap.pade_tipo_documento AS TIPO_DOCUMENTO_SAP
       FROM
           cuadratura_file_tbk c
-      LEFT JOIN proceso_cupon p ON c.id = p.id_cuadratura 
+      LEFT JOIN (
+        SELECT
+            id_cuadratura,
+            respuesta,
+            cupon_limpio,
+            rut,
+            -- (Asegúrate de que 'respuesta' y 'cupon_limpio' son las únicas
+            -- columnas de 'pc' usadas en tu lógica de perfil y joins)
+            ROW_NUMBER() OVER(
+                PARTITION BY id_cuadratura
+                ORDER BY
+                    CASE estado WHEN 'PROCESADO' THEN 1 ELSE 2 END, -- Damos prioridad al estado 'PROCESADO'
+                    id DESC -- Como desempate, usamos el 'id' más reciente
+            ) as rn
+        FROM proceso_cupon
+    ) pc ON c.id = pc.id_cuadratura AND pc.rn = 1
       LEFT JOIN (
           SELECT pa_nro_operacion, MIN(pade_tipo_documento) AS pade_tipo_documento
           FROM pop_pagos_detalle_temp_sap
           GROUP BY pa_nro_operacion
-      ) sap ON TO_CHAR(sap.pa_nro_operacion) = p.cupon_limpio
+      ) sap ON TO_CHAR(sap.pa_nro_operacion) = pc.cupon_limpio
       LEFT JOIN
           CENTRO_CC cfg ON c.centro_costo = cfg.centro_cc
       ${whereClause}
