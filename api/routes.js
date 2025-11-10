@@ -31,9 +31,11 @@ const {
   getCartolaTesoreriaController,
   getDataHistorialRut,
   getCartolaxls,
-  getDataMock,
 } = require('./controllers/cartolaTesoreriaController.js');
 const { login, loginBack } = require('./controllers/authController.js');
+const {
+  procesarArchivosRemotosPorNombre,
+} = require('./controllers/procesarArchivoPorNombreController.js');
 
 //Rutas
 router.post('/ejecutar-script', ejecutarScript); //ejecucion manual de script remoto
@@ -55,10 +57,10 @@ router.post('/historial-rut', getDataHistorialRut); // obtener data de cartola p
 router.post('/liquidacion-excel', getLiquidacionxls); //obtener excel de liquidaciones
 router.post('/cartola-excel', getCartolaxls); //obtener excel de cartola
 router.post('/exportar-excel-completo', exportarReporteCompletoExcel); // excel para obtener cuadratura
-router.post('/cartola-mock', getDataMock); //obtener data de mock
 router.get('/cuadratura/validacion/fechas-anteriores/:fecha', validarFechasAnteriores); // obtener fechas anteriores a la indicada
-router.post('/validar', validarLiquidacionController);
-router.post('/login', login);
-router.post('/login-back', loginBack);
+router.post('/validar', validarLiquidacionController); // validación liquidacion
+router.post('/login', login); //login
+router.post('/login-back', loginBack); //loginBack;
+router.post('/procesar-archivo-por-nombre', procesarArchivosRemotosPorNombre); //procesar archivo manual por nombre
 
 module.exports = router;

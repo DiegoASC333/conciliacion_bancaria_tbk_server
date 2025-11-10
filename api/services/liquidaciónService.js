@@ -90,15 +90,22 @@ async function getLiquidacionTotalesPorDocumento({ tipo, startLCN, startLDN }) {
     // Lógica para el JOIN y obtener el tipo de documento
     const isValid = (col) => `REGEXP_LIKE(TRIM(l.${col}), '^[0-9]*[1-9][0-9]*$')`;
     let joinClause = '';
+
     if (tipoUpper === 'LCN') {
-      joinClause = `LEFT JOIN CCN_TBK_HISTORICO h ON ((${isValid('liq_orpedi')} AND LTRIM(TRIM(l.liq_orpedi), '0') = LTRIM(TRIM(h.DKTT_DT_NUMERO_UNICO), '0')) OR (NOT ${isValid('liq_orpedi')} AND TRIM(l.liq_codaut) = h.DKTT_DT_APPRV_CDE))`;
+      joinClause = `LEFT JOIN CCN_TBK_HISTORICO h ON 
+      ((${isValid('liq_orpedi')} AND 
+      LTRIM(TRIM(l.liq_orpedi), '0') = LTRIM(TRIM(h.DKTT_DT_NUMERO_UNICO), '0')) 
+      OR (NOT ${isValid('liq_orpedi')} AND TRIM(l.liq_codaut) = h.DKTT_DT_APPRV_CDE))`; //AND TRUNC(l.liq_monto/100) = h.DKTT_DT_AMT_1 Se quita de momento para incongruencia entre monto abonado y total de venta
     } else if (tipoUpper === 'LDN') {
       const ldn_l_dateFormat = 'DDMMRR';
       const ldn_h_dateFormat = 'RRMMDD';
-      joinClause = `LEFT JOIN CDN_TBK_HISTORICO h ON ((${isValid('liq_nro_unico')} AND LTRIM(TRIM(l.liq_nro_unico), '0') = LTRIM(TRIM(h.DSK_ID_NRO_UNICO), '0')) OR (NOT ${isValid('liq_nro_unico')} AND TRIM(l.liq_appr) = h.DSK_APPVR_CDE))
+
+      joinClause = `LEFT JOIN CDN_TBK_HISTORICO h ON ((${isValid('liq_nro_unico')} AND LTRIM(TRIM(l.liq_nro_unico), '0') = LTRIM(TRIM(h.DSK_ID_NRO_UNICO), '0')) 
+      OR (NOT ${isValid('liq_nro_unico')} AND TRIM(l.liq_appr) = h.DSK_APPVR_CDE))
         AND REGEXP_LIKE(TO_CHAR(l.liq_fcom), '^[0-9]{5,6}$')
         AND REGEXP_LIKE(TO_CHAR(h.DSK_TRAN_DAT), '^[0-9]{5,6}$')
-        AND TO_DATE(LPAD(TO_CHAR(l.liq_fcom), 6, '0'), '${ldn_l_dateFormat}') = TO_DATE(LPAD(TO_CHAR(h.DSK_TRAN_DAT), 6, '0'), '${ldn_h_dateFormat}')`;
+        AND TO_DATE(LPAD(TO_CHAR(l.liq_fcom), 6, '0'), '${ldn_l_dateFormat}') = TO_DATE(LPAD(TO_CHAR(h.DSK_TRAN_DAT), 6, '0'), '${ldn_h_dateFormat}')
+        AND l.liq_monto = h.DSK_AMT_1 `; //Se agrega monto para evitar problemas con cupones repetidos
     }
 
     const tipoDocumentoExpr = `NVL(h.tipo_documento, 'Z5')`;
@@ -108,7 +115,7 @@ async function getLiquidacionTotalesPorDocumento({ tipo, startLCN, startLDN }) {
         : `l.liq_numc`;
 
     const sql = `
-      SELECT
+      SELECT DISTINCT
         ${tipoDocumentoExpr}          AS TIPO_DOCUMENTO,
         SUM(l.liq_monto / 100)        AS TOTAL_MONTO
       FROM liquidacion_file_tbk l

@@ -29,7 +29,7 @@ async function runJob() {
         fechaInicio: fechaInicio,
         fechaFin: fechaFin,
       },
-      { timeout: 30 * 60 * 1000 }
+      { timeout: 60 * 60 * 1000 } // 1 hora
     );
     console.log(new Date().toISOString(), 'OK', res.status);
   } catch (e) {
