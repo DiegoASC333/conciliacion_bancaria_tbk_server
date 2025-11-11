@@ -239,8 +239,8 @@ function buildCartolaQuery({ tipo, start, end }) {
       ${joinWebpay}
       ${joinDocumento}
       WHERE REGEXP_LIKE(TRIM(liq.liq_orpedi), '^\\d+$')
-        AND REGEXP_LIKE(TRIM(liq.liq_fpago), '^\\d{8}$')
-        AND TO_DATE(TRIM(liq.liq_fpago), 'DDMMYYYY')
+        AND REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{7,8}$')
+        AND TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 8, '0'), 'DDMMYYYY')
             BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
                 AND TO_DATE(:fecha_fin, 'DDMMYYYY')
     `;
@@ -296,7 +296,8 @@ function buildCartolaQuery({ tipo, start, end }) {
       ${joinWebpay}
       ${joinDocumento}
       WHERE REGEXP_LIKE(TRIM(liq.liq_nro_unico), '^\\d+$')
-        AND TO_DATE(TRIM(liq.liq_fedi), 'DD/MM/YY') -- <<< NUEVA COLUMNA Y FORMATO
+        AND REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{5,6}$')
+        AND TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 6, '0'), 'DDMMRR')
             BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
                 AND TO_DATE(:fecha_fin, 'DDMMYYYY')
     `;

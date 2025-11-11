@@ -27,6 +27,7 @@ async function getDataCartola({ tipo, start, end }) {
         totalCuotas = 1;
         cuotasRestantes = 0;
         deudaPagada = monto;
+        montoVenta = monto;
         deudaPorPagar = 0;
       } else {
         cuotasRestantes = totalCuotas - cuota;
@@ -80,12 +81,10 @@ const getTotalesWebpay = async ({ tipo, start, end }) => {
         
       FROM LCN_TBK_HISTORICO liq -- <<< Tabla histórica LCN
       WHERE
-        /* Filtro de fecha usando la columna de LCN */
-        REGEXP_LIKE(TRIM(liq.LIQ_FPAGO), '^[0-9]{8}$')
-        AND TO_DATE(TRIM(liq.LIQ_FPAGO), 'DDMMYYYY')
+        REGEXP_LIKE(TO_CHAR(liq.LIQ_FCOM), '^[0-9]{7,8}$')
+        AND TO_DATE(LPAD(TO_CHAR(liq.LIQ_FCOM), 8, '0'), 'DDMMYYYY')
             BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
                 AND TO_DATE(:fecha_fin, 'DDMMYYYY')
-      /* NO HAY JOIN A WEBPAY_TRASACCION */
     `;
 
     // --- LÓGICA LDN (DÉBITO) ---
@@ -100,12 +99,10 @@ const getTotalesWebpay = async ({ tipo, start, end }) => {
         
       FROM LDN_TBK_HISTORICO liq -- <<< Tabla histórica LDN
       WHERE
-        /* Filtro de fecha usando la columna de LDN */
-        REGEXP_LIKE(TRIM(liq.LIQ_FEDI), '^[0-9]{2}/[0-9]{2}/[0-9]{2}$')
-        AND TO_DATE(TRIM(liq.LIQ_FEDI), 'DD/MM/RR') -- <<< Usamos DD/MM/RR por seguridad
+        REGEXP_LIKE(TO_CHAR(liq.LIQ_FCOM), '^[0-9]{5,6}$')
+        AND TO_DATE(LPAD(TO_CHAR(liq.LIQ_FCOM), 6, '0'), 'DDMMRR')
             BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
                 AND TO_DATE(:fecha_fin, 'DDMMYYYY')
-      /* NO HAY JOIN A WEBPAY_TRASACCION */
     `;
   } else {
     return [{ saldo_estimado: 0, saldo_por_cobrar: 0 }];
@@ -228,11 +225,12 @@ async function getCartolaExcel({ tipo, start, end }, res) {
 /**
  * Ayudante para formatear un objeto Date a 'DDMMYYYY'
  */
+// Asumo que tienes esta función de ayuda en alguna parte
 function formatFecha(date) {
-  const dia = String(date.getDate()).padStart(2, '0');
-  const mes = String(date.getMonth() + 1).padStart(2, '0'); // Meses son 0-11
-  const ano = date.getFullYear();
-  return `${dia}${mes}${ano}`;
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${dd}${mm}${yyyy}`;
 }
 
 async function getDataHistorial({ rut, cupon, tipo }) {
@@ -247,6 +245,7 @@ async function getDataHistorial({ rut, cupon, tipo }) {
   const tabla_lcn = 'LCN_TBK_HISTORICO';
   let sql;
 
+  // ... (tu SQL queda exactamente igual)
   switch (tipo) {
     case 'LCN':
       sql = `
@@ -313,16 +312,25 @@ async function getDataHistorial({ rut, cupon, tipo }) {
 
     const datosBase = cuotasPagadas[0];
     const totalCuotas = datosBase.TOTAL_CUOTAS;
-    const montoCuotaBase = datosBase.MONTO;
+    const montoCuotaBase = datosBase.MONTO || 0;
+
+    if (!totalCuotas || totalCuotas === 1) {
+      const registroUnico = {
+        ...datosBase,
+        CUOTA_PAGADA: datosBase.CUOTA_PAGADA || 1,
+        TOTAL_CUOTAS: totalCuotas || 1,
+        MONTO: montoCuotaBase,
+        CUOTAS_RESTANTES: 0,
+        DEUDA_PAGADA: montoCuotaBase,
+        DEUDA_POR_PAGAR: 0,
+      };
+      return [registroUnico];
+    }
+
     const historialCompleto = [];
-
-    const fechaBaseStr = datosBase.FECHA_ABONO;
-    const cuotaBaseNum = datosBase.CUOTA_PAGADA;
-
-    const diaBase = parseInt(fechaBaseStr.substring(0, 2), 10);
-    const mesBase = parseInt(fechaBaseStr.substring(2, 4), 10) - 1;
-    const anoBase = parseInt(fechaBaseStr.substring(4, 8), 10);
-    const fechaObjBase = new Date(anoBase, mesBase, diaBase);
+    let fechaObjBase;
+    let diaBase;
+    let cuotaBaseNum;
 
     for (let i = 1; i <= totalCuotas; i++) {
       const registroRealPagado = cuotasPagadas.find((c) => c.CUOTA_PAGADA === i);
@@ -339,6 +347,23 @@ async function getDataHistorial({ rut, cupon, tipo }) {
           DEUDA_POR_PAGAR: deudaPorPagar,
         });
       } else {
+        if (!fechaObjBase) {
+          const fechaBaseStr = datosBase.FECHA_ABONO;
+          cuotaBaseNum = datosBase.CUOTA_PAGADA;
+
+          if (!fechaBaseStr) {
+            console.error(
+              `Error: No se puede proyectar la cuota ${i} porque datosBase.FECHA_ABONO es nula.`
+            );
+            continue;
+          }
+
+          diaBase = parseInt(fechaBaseStr.substring(0, 2), 10);
+          const mesBase = parseInt(fechaBaseStr.substring(2, 4), 10) - 1;
+          const anoBase = parseInt(fechaBaseStr.substring(4, 8), 10);
+          fechaObjBase = new Date(anoBase, mesBase, diaBase);
+        }
+
         const mesesDiferencia = i - cuotaBaseNum;
         const fechaProyectada = new Date(fechaObjBase.getTime());
         fechaProyectada.setDate(1);
@@ -382,7 +407,6 @@ async function getDataHistorial({ rut, cupon, tipo }) {
     }
   }
 }
-
 module.exports = {
   getDataCartola,
   getTotalesWebpay,
