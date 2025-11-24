@@ -3,6 +3,7 @@ const {
   getTotalesWebpay,
   getDataHistorial,
   getCartolaExcel,
+  getTotalesWebpayPorDocumento,
 } = require('../services/cartolaTesoreriaService');
 
 const getCartolaTesoreriaController = async (req, res) => {
@@ -82,8 +83,40 @@ async function getCartolaxls(req, res) {
   }
 }
 
+async function getTotalesPorDocumento(req, res) {
+  try {
+    const { tipo, start, end } = req.body;
+
+    if (!tipo || !start || !end) {
+      return res.status(400).json({
+        message: 'Faltan parámetros obligatorios en el body: tipo, start y end.',
+      });
+    }
+    const resultados = await getTotalesWebpayPorDocumento({ tipo, start, end });
+
+    if (resultados.length === 0) {
+      return res.status(404).json({
+        message: 'No se encontraron datos para los parámetros proporcionados.',
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      status: 200,
+      data: resultados,
+    });
+  } catch (error) {
+    console.error('Error en [ReportesController] getTotalesWebpayPorDocumento:', error);
+    return res.status(500).json({
+      message: 'Error interno del servidor al consultar los totales por documento.',
+      error: error.message, // Opcional: enviar el mensaje de error
+    });
+  }
+}
+
 module.exports = {
   getCartolaTesoreriaController,
   getDataHistorialRut,
   getCartolaxls,
+  getTotalesPorDocumento,
 };

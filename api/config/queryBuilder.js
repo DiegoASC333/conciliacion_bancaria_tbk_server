@@ -227,7 +227,8 @@ function buildCartolaQuery({ tipo, start, end }) {
         COALESCE(TO_CHAR(pc.rut), TO_CHAR(wt.orden_compra)) AS RUT,
         TRUNC(liq.liq_monto/100) AS monto,
         liq.liq_cuotas AS cuota,          
-        liq.liq_ntc AS total_cuotas,      
+        liq.liq_ntc AS total_cuotas,
+        TRIM(liq.liq_rete) AS RETE,       
         ${fechaAbono} AS fecha_abono,
         COALESCE(
           h.TIPO_DOCUMENTO, -- 1. Prioridad

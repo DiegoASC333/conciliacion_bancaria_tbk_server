@@ -31,11 +31,16 @@ const {
   getCartolaTesoreriaController,
   getDataHistorialRut,
   getCartolaxls,
+  getTotalesPorDocumento,
 } = require('./controllers/cartolaTesoreriaController.js');
 const { login, loginBack } = require('./controllers/authController.js');
 const {
   procesarArchivosRemotosPorNombre,
 } = require('./controllers/procesarArchivoPorNombreController.js');
+const {
+  getReporteTransacciones,
+  getReportePorDia,
+} = require('./controllers/contabilidadController.js');
 
 //Rutas
 router.post('/ejecutar-script', ejecutarScript); //ejecucion manual de script remoto
@@ -62,5 +67,8 @@ router.post('/validar', validarLiquidacionController); // validación liquidacio
 router.post('/login', login); //login
 router.post('/login-back', loginBack); //loginBack;
 router.post('/procesar-archivo-por-nombre', procesarArchivosRemotosPorNombre); //procesar archivo manual por nombre
+router.post('/descargar-excel', getReporteTransacciones); //totales para excel contabilidad
+router.post('/descargar-excel-dia', getReportePorDia);
+router.post('/totales-documento-cartola', getTotalesPorDocumento);
 
 module.exports = router;

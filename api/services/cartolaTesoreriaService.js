@@ -20,6 +20,13 @@ async function getDataCartola({ tipo, start, end }) {
       let cuota = r.CUOTA;
       let totalCuotas = r.TOTAL_CUOTAS;
 
+      const isLcnFullPayment = tipo === 'LCN' && (r.RETE || '').trim() === '0000';
+
+      if (isLcnFullPayment || !totalCuotas || totalCuotas === 0) {
+        cuota = 1;
+        totalCuotas = 1;
+      }
+
       let cuotasRestantes, deudaPagada, deudaPorPagar, montoVenta;
 
       if (!totalCuotas || totalCuotas === 0) {
@@ -123,6 +130,109 @@ const getTotalesWebpay = async ({ tipo, start, end }) => {
     return [{ saldo_estimado: 0, saldo_por_cobrar: 0 }];
   } catch (error) {
     console.error('error en getTotalesWebpay', error);
+    throw error;
+  } finally {
+    try {
+      if (connection) await connection.close();
+    } catch (_) {}
+  }
+};
+
+const getTotalesWebpayPorDocumento = async ({ tipo, start, end }) => {
+  const connection = await getConnection();
+  let sql;
+
+  // Helpers
+  const isValid = (col) => `REGEXP_LIKE(TRIM(liq.${col}), '^[0-9]*[1-9][0-9]*$')`;
+
+  // DEFINICIÓN BASE DEL TIPO DE DOCUMENTO
+  // Si el join falla, será 'Z5'. Si encuentra el doc, usará ese.
+  const baseTipoDoc = `NVL(h.tipo_documento, 'Z5')`;
+
+  try {
+    // --- LÓGICA LCN (CRÉDITO) ---
+    if (tipo === 'LCN') {
+      // Etiqueta específica para LCN
+      const labelExpr = `${baseTipoDoc} || ' - Crédito'`;
+
+      const joinClause = `
+        LEFT JOIN CCN_TBK_HISTORICO h ON 
+          ((${isValid('LIQ_ORPEDI')} AND 
+          LTRIM(TRIM(liq.LIQ_ORPEDI), '0') = LTRIM(TRIM(h.DKTT_DT_NUMERO_UNICO), '0')) 
+          OR (NOT ${isValid('LIQ_ORPEDI')} AND TRIM(liq.LIQ_CODAUT) = h.DKTT_DT_APPRV_CDE))
+      `;
+
+      const whereClause = `
+        WHERE
+          REGEXP_LIKE(TO_CHAR(liq.LIQ_FCOM), '^[0-9]{7,8}$')
+          AND TO_DATE(LPAD(TO_CHAR(liq.LIQ_FCOM), 8, '0'), 'DDMMYYYY')
+              BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
+                  AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+      `;
+
+      sql = `
+        SELECT
+          ${labelExpr}             AS TIPO_DOCUMENTO,
+          SUM(liq.LIQ_MONTO / 100) AS saldo_estimado,
+          SUM(
+            (NVL(liq.LIQ_NTC, 0) - NVL(liq.LIQ_CUOTAS, 0)) * (NVL(liq.LIQ_MONTO, 0) / 100)
+          )                        AS saldo_por_cobrar
+        FROM LCN_TBK_HISTORICO liq
+        ${joinClause}
+        ${whereClause}
+        GROUP BY ${baseTipoDoc} 
+        ORDER BY saldo_estimado DESC
+      `;
+      // Nota: Group By usa la baseTipoDoc porque el sufijo es constante para toda la query.
+
+      // --- LÓGICA LDN (DÉBITO) ---
+    } else if (tipo === 'LDN') {
+      const ldn_l_dateFormat = 'DDMMRR';
+      const ldn_h_dateFormat = 'RRMMDD';
+
+      // Etiqueta específica para LDN
+      const labelExpr = `${baseTipoDoc} || ' - Débito'`;
+
+      const joinClause = `
+        LEFT JOIN CDN_TBK_HISTORICO h ON 
+          ((${isValid('LIQ_NRO_UNICO')} AND LTRIM(TRIM(liq.LIQ_NRO_UNICO), '0') = LTRIM(TRIM(h.DSK_ID_NRO_UNICO), '0')) 
+          OR (NOT ${isValid('LIQ_NRO_UNICO')} AND TRIM(liq.LIQ_APPR) = h.DSK_APPVR_CDE))
+            AND REGEXP_LIKE(TO_CHAR(h.DSK_TRAN_DAT), '^[0-9]{5,6}$')
+            AND TO_DATE(LPAD(TO_CHAR(liq.LIQ_FCOM), 6, '0'), '${ldn_l_dateFormat}') = TO_DATE(LPAD(TO_CHAR(h.DSK_TRAN_DAT), 6, '0'), '${ldn_h_dateFormat}')
+            AND liq.LIQ_AMT_1 = h.DSK_AMT_1
+      `;
+
+      const whereClause = `
+        WHERE
+          REGEXP_LIKE(TO_CHAR(liq.LIQ_FCOM), '^[0-9]{5,6}$')
+          AND TO_DATE(LPAD(TO_CHAR(liq.LIQ_FCOM), 6, '0'), 'DDMMRR')
+              BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
+                  AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+      `;
+
+      sql = `
+        SELECT
+          ${labelExpr}             AS TIPO_DOCUMENTO,
+          SUM(liq.LIQ_AMT_1 / 100) AS saldo_estimado,
+          0                        AS saldo_por_cobrar
+        FROM LDN_TBK_HISTORICO liq
+        ${joinClause}
+        ${whereClause}
+        GROUP BY ${baseTipoDoc}
+        ORDER BY saldo_estimado DESC
+      `;
+    } else {
+      return [];
+    }
+
+    // EJECUCIÓN
+    const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
+    const binds = { fecha_ini: start, fecha_fin: end };
+
+    const res = await connection.execute(sql, binds, options);
+    return res.rows || [];
+  } catch (error) {
+    console.error('Error en getTotalesWebpayPorDocumento', error);
     throw error;
   } finally {
     try {
@@ -412,4 +522,5 @@ module.exports = {
   getTotalesWebpay,
   getDataHistorial,
   getCartolaExcel,
+  getTotalesWebpayPorDocumento,
 };
