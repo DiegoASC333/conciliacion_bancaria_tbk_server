@@ -19,6 +19,7 @@ async function getDataCartola({ tipo, start, end }) {
       const monto = r.MONTO;
       let cuota = r.CUOTA;
       let totalCuotas = r.TOTAL_CUOTAS;
+      let monto_total_venta = r.MONTO_TOTAL_VENTA;
 
       const isLcnFullPayment = tipo === 'LCN' && (r.RETE || '').trim() === '0000';
 
@@ -34,13 +35,18 @@ async function getDataCartola({ tipo, start, end }) {
         totalCuotas = 1;
         cuotasRestantes = 0;
         deudaPagada = monto;
-        montoVenta = monto;
+        montoVenta = monto_total_venta;
         deudaPorPagar = 0;
       } else {
         cuotasRestantes = totalCuotas - cuota;
         deudaPagada = cuota * monto;
-        montoVenta = monto * totalCuotas;
+        montoVenta = monto_total_venta || monto * totalCuotas;
         deudaPorPagar = montoVenta - deudaPagada;
+        if (deudaPorPagar < 0 && Math.abs(deudaPorPagar) <= 1) {
+          deudaPorPagar = 0;
+        } else if (deudaPorPagar > 0 && Math.abs(deudaPorPagar) <= 1) {
+          deudaPorPagar = 0;
+        }
       }
 
       return {
@@ -48,7 +54,7 @@ async function getDataCartola({ tipo, start, end }) {
         CUPON: r.CUPON,
         FECHA_VENTA: r.FECHA_VENTA,
         RUT: r.RUT,
-        MONTO: monto,
+        MONTO: monto, //monto abonado, valor cuota o total de la venta segun corresponda
         CUOTA: cuota,
         TOTAL_CUOTAS: totalCuotas,
         CUOTAS_RESTANTES: cuotasRestantes,
@@ -75,7 +81,38 @@ const getTotalesWebpay = async ({ tipo, start, end }) => {
   const connection = await getConnection();
   let sql;
 
+  const tipoUpper = (tipo || '').toUpperCase();
+  const isValid = (col) => `REGEXP_LIKE(TRIM(${col}), '^[0-9]*[1-9][0-9]*$')`;
+
   if (tipo === 'LCN') {
+    const lcn_l_dateFormat = 'DDMMYYYY';
+    const lcn_h_dateFormat = 'RRMMDD';
+    const nombreColumnaFechaPC = 'FECHA';
+
+    const cuponExpr =
+      tipoUpper === 'LCN'
+        ? `CASE WHEN ${isValid('liq.liq_orpedi')} THEN LTRIM(TRIM(liq.liq_orpedi), '0') ELSE TRIM(liq.liq_codaut) END`
+        : `CASE WHEN ${isValid('liq.liq_nro_unico')} THEN LTRIM(TRIM(liq.liq_nro_unico), '0') ELSE LTRIM(TRIM(liq.liq_appr), '0') END`;
+    const joinDocumento = `
+      LEFT JOIN CCN_TBK_HISTORICO h ON
+        (
+          ${isValid('liq.liq_orpedi')} AND
+          LTRIM(TRIM(liq.liq_orpedi), '0') = LTRIM(TRIM(h.DKTT_DT_NUMERO_UNICO), '0')
+        ) OR
+        (
+          NOT ${isValid('liq.liq_orpedi')} AND
+          TRIM(liq.liq_codaut) = h.DKTT_DT_APPRV_CDE 
+        )
+        AND REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{7,8}$')
+        AND REGEXP_LIKE(TO_CHAR(h.DKTT_DT_TRAN_DAT), '^[0-9]{5,6}$')
+        AND TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 8, '0'), '${lcn_l_dateFormat}') = TO_DATE(LPAD(TO_CHAR(h.DKTT_DT_TRAN_DAT), 6, '0'), '${lcn_h_dateFormat}')`;
+
+    const joinProcesoCupon = `
+        LEFT JOIN PROCESO_CUPON pc 
+        ON LTRIM(TRIM(pc.CUPON), '0') = ${cuponExpr}
+        AND TO_CHAR(pc.${nombreColumnaFechaPC}) = TO_CHAR(h.DKTT_DT_TRAN_DAT)
+        AND pc.id_cuadratura = h.id_ccn`;
+
     sql = `
       SELECT
         /* Saldo estimado: Es la suma del monto de las cuotas liquidadas en el rango */
@@ -84,14 +121,18 @@ const getTotalesWebpay = async ({ tipo, start, end }) => {
         /* Saldo por cobrar: (Total cuotas - cuota actual) * valor de la cuota */
         SUM(
           (NVL(liq.LIQ_NTC, 0) - NVL(liq.LIQ_CUOTAS, 0)) * (NVL(liq.LIQ_MONTO, 0) / 100)
-        ) AS saldo_por_cobrar
+        ) AS saldo_por_cobrar,
+        SUM(h.DKTT_DT_AMT_1 / 100) AS saldo_total_ventas
         
-      FROM LCN_TBK_HISTORICO liq -- <<< Tabla histórica LCN
+      FROM LCN_TBK_HISTORICO liq 
+      ${joinDocumento}
+      ${joinProcesoCupon}
       WHERE
-        REGEXP_LIKE(TO_CHAR(liq.LIQ_FCOM), '^[0-9]{7,8}$')
+        REGEXP_LIKE(TRIM(liq.liq_orpedi), '^\\d+$') -- <<< AGREGAR ESTA LÍNEA
+        AND REGEXP_LIKE(TO_CHAR(liq.LIQ_FCOM), '^[0-9]{7,8}$')
         AND TO_DATE(LPAD(TO_CHAR(liq.LIQ_FCOM), 8, '0'), 'DDMMYYYY')
-            BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
-                AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+        BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
+        AND TO_DATE(:fecha_fin, 'DDMMYYYY')
     `;
 
     // --- LÓGICA LDN (DÉBITO) ---
@@ -263,6 +304,15 @@ async function getCartolaExcel({ tipo, start, end }, res) {
         const monto = r.MONTO;
         let cuota = r.CUOTA;
         let totalCuotas = r.TOTAL_CUOTAS;
+        let monto_total_venta = r.MONTO_TOTAL_VENTA;
+
+        const isLcnFullPayment = tipo === 'LCN' && (r.RETE || '').trim() === '0000'; //
+
+        if (isLcnFullPayment || !totalCuotas || totalCuotas === 0) {
+          cuota = 1;
+          totalCuotas = 1;
+        }
+
         let cuotasRestantes, deudaPagada, deudaPorPagar, montoVenta;
 
         if (!totalCuotas || totalCuotas === 0) {
@@ -270,19 +320,25 @@ async function getCartolaExcel({ tipo, start, end }, res) {
           totalCuotas = 1;
           cuotasRestantes = 0;
           deudaPagada = monto;
+          montoVenta = monto_total_venta;
           deudaPorPagar = 0;
         } else {
           cuotasRestantes = totalCuotas - cuota;
           deudaPagada = cuota * monto;
-          montoVenta = monto * totalCuotas;
+          montoVenta = monto_total_venta || monto * totalCuotas;
           deudaPorPagar = montoVenta - deudaPagada;
+          if (deudaPorPagar < 0 && Math.abs(deudaPorPagar) <= 1) {
+            deudaPorPagar = 0;
+          } else if (deudaPorPagar > 0 && Math.abs(deudaPorPagar) <= 1) {
+            deudaPorPagar = 0;
+          }
         }
 
         return {
           ID: r.ID,
           CUPON: r.CUPON,
           FECHA_VENTA: r.FECHA_VENTA,
-          RUT: r.RUT,
+          RUT: r.RUT || 'No se encuentra rut',
           MONTO: monto,
           CUOTA: cuota,
           TOTAL_CUOTAS: totalCuotas,
