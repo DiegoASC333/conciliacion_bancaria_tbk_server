@@ -52,6 +52,7 @@ async function getDataCartola({ tipo, start, end }) {
       return {
         ID: r.ID,
         CUPON: r.CUPON,
+        CODIGO_AUTORIZACIÓN: r.CODIGO_AUTORIZACION,
         FECHA_VENTA: r.FECHA_VENTA,
         RUT: r.RUT,
         MONTO: monto, //monto abonado, valor cuota o total de la venta segun corresponda
@@ -79,10 +80,17 @@ async function getDataCartola({ tipo, start, end }) {
 
 const getTotalesWebpay = async ({ tipo, start, end }) => {
   const connection = await getConnection();
-  let sql;
-
   const tipoUpper = (tipo || '').toUpperCase();
   const isValid = (col) => `REGEXP_LIKE(TRIM(${col}), '^[0-9]*[1-9][0-9]*$')`;
+
+  let sqlVentas;
+  let sqlSaldos;
+
+  const resultado = {
+    saldo_estimado: 0,
+    saldo_por_cobrar: 0,
+    saldo_total_ventas: 0,
+  };
 
   if (tipo === 'LCN') {
     const lcn_l_dateFormat = 'DDMMYYYY';
@@ -113,47 +121,83 @@ const getTotalesWebpay = async ({ tipo, start, end }) => {
         AND TO_CHAR(pc.${nombreColumnaFechaPC}) = TO_CHAR(h.DKTT_DT_TRAN_DAT)
         AND pc.id_cuadratura = h.id_ccn`;
 
-    sql = `
-      SELECT
-        /* Saldo estimado: Es la suma del monto de las cuotas liquidadas en el rango */
-        SUM(liq.LIQ_MONTO / 100) AS saldo_estimado,
-        
-        /* Saldo por cobrar: (Total cuotas - cuota actual) * valor de la cuota */
-        SUM(
-          (NVL(liq.LIQ_NTC, 0) - NVL(liq.LIQ_CUOTAS, 0)) * (NVL(liq.LIQ_MONTO, 0) / 100)
-        ) AS saldo_por_cobrar,
+    sqlVentas = `
+      SELECT DISTINCT
         SUM(h.DKTT_DT_AMT_1 / 100) AS saldo_total_ventas
-        
       FROM LCN_TBK_HISTORICO liq 
       ${joinDocumento}
       ${joinProcesoCupon}
       WHERE
-        REGEXP_LIKE(TRIM(liq.liq_orpedi), '^\\d+$') -- <<< AGREGAR ESTA LÍNEA
+        REGEXP_LIKE(TRIM(liq.liq_orpedi), '^\\d+$')
         AND REGEXP_LIKE(TO_CHAR(liq.LIQ_FCOM), '^[0-9]{7,8}$')
         AND TO_DATE(LPAD(TO_CHAR(liq.LIQ_FCOM), 8, '0'), 'DDMMYYYY')
         BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
         AND TO_DATE(:fecha_fin, 'DDMMYYYY')
     `;
 
+    sqlSaldos = `
+      SELECT
+        SUM(liq.LIQ_MONTO / 100) AS saldo_estimado,
+        
+        SUM((NVL(liq.LIQ_NTC, 0) - NVL(liq.LIQ_CUOTAS, 0)) * (NVL(liq.LIQ_MONTO, 0)) / 100)AS saldo_por_cobrar
+        
+      FROM LCN_TBK_HISTORICO liq 
+      WHERE
+        REGEXP_LIKE(TRIM(liq.liq_orpedi), '^\\d+$')
+        AND REGEXP_LIKE(TO_CHAR(liq.LIQ_FPAGO), '^[0-9]{8}$') -- Validar el formato DDMMYYYY
+        AND TO_DATE(LPAD(TO_CHAR(liq.LIQ_FPAGO), 8, '0'), 'DDMMYYYY')
+        BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
+        AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+    `;
+
     // --- LÓGICA LDN (DÉBITO) ---
   } else if (tipo === 'LDN') {
-    sql = `
+    const ldn_l_dateFormat = 'DDMMRR';
+    const ldn_h_dateFormat = 'RRMMDD';
+
+    const joinDocumento = `
+      LEFT JOIN CDN_TBK_HISTORICO h ON
+        (
+          ${isValid('liq.liq_nro_unico')} AND
+          LTRIM(TRIM(liq.liq_nro_unico), '0') = LTRIM(TRIM(h.DSK_ID_NRO_UNICO), '0')
+        ) OR
+        (
+          NOT ${isValid('liq.liq_nro_unico')} AND
+          TRIM(liq.liq_appr) = h.DSK_APPVR_CDE
+        )
+        AND REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{5,6}$')
+        AND REGEXP_LIKE(TO_CHAR(h.DSK_TRAN_DAT), '^[0-9]{5,6}$')
+        AND TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 6, '0'), '${ldn_l_dateFormat}') = TO_DATE(LPAD(TO_CHAR(h.DSK_TRAN_DAT), 6, '0'), '${ldn_h_dateFormat}')
+        AND liq.LIQ_AMT_1 = h.DSK_AMT_1 
+    `;
+
+    sqlVentas = `
+      SELECT
+        SUM(h.DSK_AMT_1 / 100) AS saldo_total_ventas
+      FROM LDN_TBK_HISTORICO liq 
+      ${joinDocumento}
+       WHERE REGEXP_LIKE(TRIM(liq.liq_nro_unico), '^\\d+$')
+        AND REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{5,6}$')
+        AND TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 6, '0'), 'DDMMRR')
+            BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
+                AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+    `;
+
+    sqlSaldos = `
       SELECT
         /* Saldo estimado: Suma de los montos de débito liquidados */
         SUM(liq.LIQ_AMT_1 / 100) AS saldo_estimado,
-        
-        /* Saldo por cobrar: Siempre 0 para débito */
         0 AS saldo_por_cobrar
-        
-      FROM LDN_TBK_HISTORICO liq -- <<< Tabla histórica LDN
+      FROM LDN_TBK_HISTORICO liq 
+      ${joinDocumento}
       WHERE
-        REGEXP_LIKE(TO_CHAR(liq.LIQ_FCOM), '^[0-9]{5,6}$')
-        AND TO_DATE(LPAD(TO_CHAR(liq.LIQ_FCOM), 6, '0'), 'DDMMRR')
+        REGEXP_LIKE(liq.LIQ_FEDI, '^\\d{2}/\\d{2}/\\d{2}$') -- Validar el formato DD/MM/RR
+        AND TO_DATE(liq.LIQ_FEDI, 'DD/MM/RR')
             BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
                 AND TO_DATE(:fecha_fin, 'DDMMYYYY')
     `;
   } else {
-    return [{ saldo_estimado: 0, saldo_por_cobrar: 0 }];
+    return [resultado];
   }
 
   try {
@@ -162,13 +206,34 @@ const getTotalesWebpay = async ({ tipo, start, end }) => {
       fecha_ini: start,
       fecha_fin: end,
     };
-    const res = await connection.execute(sql, binds, options);
-
+    //const res = await connection.execute(sql, binds, options);
     // Asegurar que devuelva 0 si SUM da NULL (ninguna fila encontrada)
-    if (res.rows.length > 0 && res.rows[0].saldo_estimado !== null) {
-      return res.rows;
+    // if (res.rows.length > 0 && res.rows[0].saldo_estimado !== null) {
+    //   return res.rows;
+    // }
+
+    const resVentas = await connection.execute(sqlVentas, binds, options);
+    if (resVentas.rows.length > 0) {
+      resultado.saldo_total_ventas = resVentas.rows[0].SALDO_TOTAL_VENTAS || 0;
     }
-    return [{ saldo_estimado: 0, saldo_por_cobrar: 0 }];
+
+    const resSaldos = await connection.execute(sqlSaldos, binds, options);
+    if (resSaldos.rows.length > 0) {
+      resultado.saldo_estimado = resSaldos.rows[0].SALDO_ESTIMADO || 0;
+      resultado.saldo_por_cobrar = resSaldos.rows[0].SALDO_POR_COBRAR || 0;
+    }
+
+    if (tipo === 'LDN') {
+      const totalVentas = resultado.saldo_total_ventas;
+      const totalAbonado = resultado.saldo_estimado;
+      resultado.saldo_por_cobrar = Math.max(0, totalVentas - totalAbonado);
+    } else {
+      resultado.saldo_por_cobrar = resSaldos.rows[0].SALDO_POR_COBRAR || 0;
+    }
+
+    console.log(sqlVentas, sqlSaldos, binds);
+    return [resultado];
+    //return [{ saldo_estimado: 0, saldo_por_cobrar: 0 }];
   } catch (error) {
     console.error('error en getTotalesWebpay', error);
     throw error;
@@ -337,6 +402,7 @@ async function getCartolaExcel({ tipo, start, end }, res) {
         return {
           ID: r.ID,
           CUPON: r.CUPON,
+          CODIGO_AUTORIZACION: r.CODIGO_AUTORIZACION,
           FECHA_VENTA: r.FECHA_VENTA,
           RUT: r.RUT || 'No se encuentra rut',
           MONTO: monto,
@@ -358,6 +424,7 @@ async function getCartolaExcel({ tipo, start, end }, res) {
         FECHA_ABONO: r.FECHA_ABONO,
         RUT: r.RUT,
         CUPON: r.CUPON,
+        CODIGO_AUTORIZACION: r.CODIGO_AUTORIZACION,
         TIPO_DOCUMENTO: r.TIPO_DOCUMENTO,
       };
 

@@ -227,6 +227,7 @@ function buildCartolaQuery({ tipo, start, end }) {
       SELECT
         id_lcn as id,
         ${cuponExpr}              AS CUPON,
+        liq.liq_codaut as CODIGO_AUTORIZACION,
         ${fechaVenta} AS fecha_venta,
         ROUND(h.DKTT_DT_AMT_1/100) AS monto_total_venta,
         COALESCE(TO_CHAR(pc.rut), TO_CHAR(wt.orden_compra)) AS RUT,
@@ -303,6 +304,7 @@ function buildCartolaQuery({ tipo, start, end }) {
       SELECT
         id_ldn as id,
         ${cuponExpr}              AS CUPON,
+        liq.liq_appr as codigo_autorizacion,
         ${fechaVenta} AS fecha_venta,
         COALESCE(TO_CHAR(pc.rut), TO_CHAR(wt.orden_compra)) AS RUT,
         TRUNC(liq.liq_amt_1/100) AS monto,

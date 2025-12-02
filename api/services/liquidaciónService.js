@@ -207,7 +207,7 @@ async function getLiquidacionExcel({ tipo, startLCN, startLDN }, res) {
   }
 }
 
-async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
+async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId, totalGeneral }) {
   const connection = await getConnection();
   const tipoUpper = tipo.toUpperCase();
 
@@ -268,9 +268,9 @@ async function guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId }) {
     }
 
     await connection.execute(
-      `INSERT INTO LOG_ENVIO_CONTABILIDAD (ID_AUD, USUARIO, REGISTROS_ENVIADOS, FECHA_ENVIO)
-       VALUES (SEQ_AUD_ENVIO_CONTABILIDAD.NEXTVAL, :usuarioId, :cant, SYSDATE)`,
-      { usuarioId, cant },
+      `INSERT INTO LOG_ENVIO_CONTABILIDAD (ID_AUD, DETALLE_AUDITORIA,USUARIO, REGISTROS_ENVIADOS, FECHA_ENVIO)
+       VALUES (SEQ_AUD_ENVIO_CONTABILIDAD.NEXTVAL, :totalGeneral ,:usuarioId, :cant, SYSDATE)`,
+      { totalGeneral, usuarioId, cant },
       { autoCommit: false }
     );
 

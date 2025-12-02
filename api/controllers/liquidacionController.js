@@ -112,15 +112,20 @@ async function getLiquidacionxls(req, res) {
 
 const validarLiquidacionController = async (req, res) => {
   try {
-    const { tipo, fecha, usuarioId } = req.body;
+    const { tipo, fecha, usuarioId, totalGeneral } = req.body;
 
-    if (!tipo || !fecha || !usuarioId) {
+    if (!tipo || !fecha || !usuarioId || !totalGeneral) {
       return res.status(400).json({
         mensaje: 'Petición inválida. Se requiere "tipo", "fecha" y "usuarioId".',
       });
     }
 
-    const resultado = await guardarLiquidacionesHistoricas({ tipo, fecha, usuarioId });
+    const resultado = await guardarLiquidacionesHistoricas({
+      tipo,
+      fecha,
+      usuarioId,
+      totalGeneral,
+    });
 
     res.status(200).json({
       mensaje: 'Proceso de validación completado con éxito.',

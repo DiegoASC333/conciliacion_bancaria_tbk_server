@@ -52,6 +52,7 @@ async function getDataDescargaExcel({ fecha_inicio, fecha_fin }) {
   try {
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
     const res = await connection.execute(sqlQuery, params, options);
+    console.log(params);
     return res.rows || [];
   } catch (err) {
     console.error('Error en el servicio al ejecutar la consulta:', err);
@@ -277,7 +278,8 @@ async function generarReporte(dataRows, fechaConsulta) {
     worksheet.addRow(excelRow);
   });
 
-  return workbook.xlsx.writeBuffer();
+  //return workbook.xlsx.writeBuffer();
+  return workbook.csv.writeBuffer();
 
   // --- 2.6 Guardar Archivo ---
   // const nombreArchivo = 'Reporte_SAP.xlsx';

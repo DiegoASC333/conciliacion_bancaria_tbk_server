@@ -62,11 +62,17 @@ async function getReportePorDia(req, res) {
 
     const fileBuffer = await generarReporte(datos, fechaConsulta);
 
-    res.setHeader(
-      'Content-Type',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    );
-    res.setHeader('Content-Disposition', 'attachment; filename=' + 'Reporte_SAP.xlsx');
+    // res.setHeader(
+    //   'Content-Type',
+    //   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    // );
+    // res.setHeader('Content-Disposition', 'attachment; filename=' + 'Reporte_SAP.xlsx');
+
+    // res.send(fileBuffer);
+
+    res.setHeader('Content-Type', 'text/csv');
+
+    res.setHeader('Content-Disposition', 'attachment; filename=' + 'Reporte_SAP.csv');
 
     res.send(fileBuffer);
   } catch (err) {
