@@ -52,7 +52,6 @@ async function getDataDescargaExcel({ fecha_inicio, fecha_fin }) {
   try {
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
     const res = await connection.execute(sqlQuery, params, options);
-    console.log(params);
     return res.rows || [];
   } catch (err) {
     console.error('Error en el servicio al ejecutar la consulta:', err);
