@@ -2,74 +2,143 @@ const { getConnection, exportToExcel } = require('../config/utils');
 const { buildCartolaQuery } = require('../config/queryBuilder');
 const oracledb = require('oracledb');
 
+async function getCartolaDataAndTotals({ tipo, start, end }) {
+  const detalle = await getDataCartola({ tipo, start, end });
+  const totales = calcularTotalesEnNode(detalle, tipo);
+
+  return { detalle, totales };
+}
+
+function calcularTotalesEnNode(detalle, tipo) {
+  const resultado = {
+    saldo_estimado: 0, // Representa la "Cajita Verde" (Total Abonos/Ingresos)
+    saldo_por_cobrar: 0, // Representa la "Cajita Amarilla" (Diferencia)
+    saldo_total_ventas: 0, // Representa la "Cajita Azul" (Total Ventas Únicas)
+  };
+
+  detalle.forEach((r) => {
+    // --- LÓGICA PARA DÉBITO (LDN) ---
+    if (tipo === 'LDN') {
+      // Sumamos la venta si ocurrió en el periodo
+      if (r.ES_VENTA_PERIODO === 1) {
+        resultado.saldo_total_ventas += Number(r.MONTO || 0);
+      }
+      // Sumamos el abono si se liquidó en el periodo
+      if (r.ES_ABONO_PERIODO === 1) {
+        resultado.saldo_estimado += Number(r.MONTO || 0);
+      }
+    }
+
+    // --- LÓGICA PARA CRÉDITO (LCN) ---
+    else if (tipo === 'LCN') {
+      let contadorVentas = 0;
+      // Usamos ES_VENTA_PERIODO (que solo es 1 para la Cuota 1 en el rango)
+      // Esto evita que sumemos la misma venta 3, 6 o 12 veces si hay varias cuotas.
+      if (r.ES_VENTA_PERIODO === 1) {
+        resultado.saldo_total_ventas += Number(r.VENTA_TOTAL_ORIGINAL || 0);
+        contadorVentas++;
+        console.log(
+          `Venta detectada: ${r.CUPON} - Monto: ${r.VENTA_TOTAL_ORIGINAL} - Fecha: ${r.FECHA_VENTA} - cuota: ${r.CUOTA}`
+        );
+      }
+      //console.log(contadorVentas);
+
+      // Sumamos el abono de CUALQUIER cuota que haya caído en el periodo
+      if (r.ES_ABONO_PERIODO === 1) {
+        // Importante: r.MONTO es el valor de la cuota individual
+        resultado.saldo_estimado += Number(r.MONTO || 0);
+      }
+    }
+  });
+
+  // Cálculo de la Diferencia Neta
+  // Nota: En periodos largos, esto muestra el saldo pendiente de cobro.
+  // En periodos muy cortos con mucha recaudación antigua, podría dar 0.
+  resultado.saldo_por_cobrar = resultado.saldo_total_ventas - resultado.saldo_estimado;
+  // Si prefieres no mostrar saldos negativos (cuando recaudas más de lo que vendes),
+  // mantén el Math.max. Si quieres ver el superávit, quítalo.
+  if (resultado.saldo_por_cobrar < 0) {
+    resultado.saldo_por_cobrar = 0;
+  }
+
+  return [resultado]; // Retorna array para mantener compatibilidad con el controlador
+}
+
 async function getDataCartola({ tipo, start, end }) {
   const connection = await getConnection();
 
   try {
     const { sql, binds } = buildCartolaQuery({ tipo, start, end });
-
     const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
     const res = await connection.execute(sql, binds, options);
 
-    if (tipo === 'LDN') {
-      return res.rows || [];
-    }
+    const rows = res.rows || [];
 
-    const filas = (res.rows || []).map((r) => {
-      const monto = r.MONTO;
-      let cuota = r.CUOTA;
-      let totalCuotas = r.TOTAL_CUOTAS;
-      let monto_total_venta = r.MONTO_TOTAL_VENTA;
-
-      const isLcnFullPayment = tipo === 'LCN' && (r.RETE || '').trim() === '0000';
-
-      if (isLcnFullPayment || !totalCuotas || totalCuotas === 0) {
-        cuota = 1;
-        totalCuotas = 1;
+    const filas = rows.map((r) => {
+      // --- ESCENARIO 1: DÉBITO (LDN) ---
+      if (tipo === 'LDN') {
+        return {
+          ID: r.ID,
+          CUPON: r.CUPON,
+          CODIGO_AUTORIZACION: r.CODIGO_AUTORIZACION,
+          FECHA_VENTA: r.FECHA_VENTA,
+          RUT: r.RUT,
+          MONTO: r.MONTO,
+          CUOTA: 1,
+          TOTAL_CUOTAS: 1,
+          CUOTAS_RESTANTES: 0,
+          MONTO_VENTA: r.MONTO,
+          DEUDA_PAGADA: r.ES_ABONO_PERIODO === 1 ? r.MONTO : 0,
+          // Muestra el monto pendiente si la fecha de abono es futura al periodo
+          DEUDA_POR_PAGAR:
+            r.MONTO_PENDIENTE !== undefined ? r.MONTO_PENDIENTE : r.monto_pendiente || 0,
+          FECHA_ABONO: r.FECHA_ABONO,
+          TIPO_DOCUMENTO: r.TIPO_DOCUMENTO,
+          ES_VENTA_PERIODO: r.ES_VENTA_PERIODO,
+          ES_ABONO_PERIODO: r.ES_ABONO_PERIODO,
+        };
       }
 
-      let cuotasRestantes, deudaPagada, deudaPorPagar, montoVenta;
+      // --- ESCENARIO 2: CRÉDITO (LCN) ---
+      // Definimos variables base para LCN
+      const montoCuota = r.MONTO;
+      const montoVentaOriginal = r.VENTA_TOTAL_ORIGINAL;
+      const esVentaPeriodo = r.ES_VENTA_PERIODO;
 
-      if (!totalCuotas || totalCuotas === 0) {
-        cuota = 1;
-        totalCuotas = 1;
-        cuotasRestantes = 0;
-        deudaPagada = monto;
-        montoVenta = monto_total_venta;
-        deudaPorPagar = 0;
-      } else {
-        cuotasRestantes = totalCuotas - cuota;
-        deudaPagada = cuota * monto;
-        montoVenta = monto_total_venta || monto * totalCuotas;
-        deudaPorPagar = montoVenta - deudaPagada;
-        if (deudaPorPagar < 0 && Math.abs(deudaPorPagar) <= 1) {
-          deudaPorPagar = 0;
-        } else if (deudaPorPagar > 0 && Math.abs(deudaPorPagar) <= 1) {
-          deudaPorPagar = 0;
-        }
-      }
+      // Lógica de cuotas (considerando pagos full/contado como 1 cuota)
+      const isLcnFullPayment = (r.RETE || '').trim() === '0000';
+      const cuotaActual = isLcnFullPayment ? 1 : r.CUOTA;
+      const totalCuotas = isLcnFullPayment ? 1 : r.TOTAL_CUOTAS;
 
+      // Deuda por pagar visual: Si es la venta nueva (cuota 1), muestra lo que falta cobrar
+      let deudaRestante =
+        cuotaActual === 1 && esVentaPeriodo === 1 ? montoVentaOriginal - montoCuota : 0;
+      // Retornamos el objeto para LCN
       return {
         ID: r.ID,
         CUPON: r.CUPON,
-        CODIGO_AUTORIZACIÓN: r.CODIGO_AUTORIZACION,
+        CODIGO_AUTORIZACION: r.CODIGO_AUTORIZACION,
         FECHA_VENTA: r.FECHA_VENTA,
         RUT: r.RUT,
-        MONTO: monto, //monto abonado, valor cuota o total de la venta segun corresponda
-        CUOTA: cuota,
+        MONTO: montoCuota, // Lo que se abona hoy (valor cuota)
+        CUOTA: cuotaActual,
         TOTAL_CUOTAS: totalCuotas,
-        CUOTAS_RESTANTES: cuotasRestantes,
-        MONTO_VENTA: montoVenta,
-        DEUDA_PAGADA: deudaPagada,
-        DEUDA_POR_PAGAR: deudaPorPagar,
+        CUOTAS_RESTANTES: totalCuotas - cuotaActual,
+        MONTO_VENTA: montoVentaOriginal, // Se mantiene visible para el usuario siempre
+        DEUDA_PAGADA: r.ES_ABONO_PERIODO === 1 ? montoCuota : 0,
+        DEUDA_POR_PAGAR: Math.max(0, deudaRestante),
         FECHA_ABONO: r.FECHA_ABONO,
         TIPO_DOCUMENTO: r.TIPO_DOCUMENTO,
+        // Indicadores invisibles para la función calcularTotalesEnNode
+        ES_VENTA_PERIODO: r.ES_VENTA_PERIODO,
+        ES_ABONO_PERIODO: r.ES_ABONO_PERIODO,
+        VENTA_TOTAL_ORIGINAL: montoVentaOriginal,
       };
     });
 
     return filas;
   } catch (error) {
-    console.error('error', error);
+    console.error('Error en getDataCartola:', error);
     throw error;
   } finally {
     try {
@@ -96,11 +165,22 @@ const getTotalesWebpay = async ({ tipo, start, end }) => {
     const lcn_l_dateFormat = 'DDMMYYYY';
     const lcn_h_dateFormat = 'RRMMDD';
     const nombreColumnaFechaPC = 'FECHA';
+    const cutOffDate = '01102025'; // Fecha de corte fija
+
+    const montoTotalVentaCondicional = `
+      CASE
+        WHEN REGEXP_LIKE(TO_CHAR(liq.LIQ_FCOM), '^[0-9]{7,8}$') AND
+             TO_DATE(LPAD(TO_CHAR(liq.LIQ_FCOM), 8, '0'), 'DDMMYYYY') < TO_DATE('${cutOffDate}', 'DDMMYYYY')
+        THEN ROUND(liq.LIQ_MONTO / 100) * (liq.LIQ_NTC - liq.LIQ_CUOTAS)
+        ELSE ROUND(h.DKTT_DT_AMT_1 / 100)
+      END
+    `;
 
     const cuponExpr =
       tipoUpper === 'LCN'
         ? `CASE WHEN ${isValid('liq.liq_orpedi')} THEN LTRIM(TRIM(liq.liq_orpedi), '0') ELSE TRIM(liq.liq_codaut) END`
         : `CASE WHEN ${isValid('liq.liq_nro_unico')} THEN LTRIM(TRIM(liq.liq_nro_unico), '0') ELSE LTRIM(TRIM(liq.liq_appr), '0') END`;
+
     const joinDocumento = `
       LEFT JOIN CCN_TBK_HISTORICO h ON
         (
@@ -121,19 +201,35 @@ const getTotalesWebpay = async ({ tipo, start, end }) => {
         AND TO_CHAR(pc.${nombreColumnaFechaPC}) = TO_CHAR(h.DKTT_DT_TRAN_DAT)
         AND pc.id_cuadratura = h.id_ccn`;
 
+    const montoTotalVenta = `
+      CASE
+        -- 2. Si la transacción es antigua (antes del cutOffDate), usar la lógica Crédito: (Monto por cuota * Total de cuotas)
+        WHEN REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{7,8}$') AND
+             TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 8, '0'), 'DDMMYYYY') < TO_DATE('${cutOffDate}', 'DDMMYYYY')
+        THEN ROUND (liq.liq_monto / 100) * liq.liq_ntc
+        
+        -- 3. Si es posterior o igual, usar el monto de la tabla de documentos
+        ELSE ROUND(h.DKTT_DT_AMT_1/100)
+      END
+    `;
+
     sqlVentas = `
       SELECT DISTINCT
         SUM(h.DKTT_DT_AMT_1 / 100) AS saldo_total_ventas
       FROM LCN_TBK_HISTORICO liq 
       ${joinDocumento}
-      ${joinProcesoCupon}
+      
       WHERE
         REGEXP_LIKE(TRIM(liq.liq_orpedi), '^\\d+$')
-        AND REGEXP_LIKE(TO_CHAR(liq.LIQ_FCOM), '^[0-9]{7,8}$')
-        AND TO_DATE(LPAD(TO_CHAR(liq.LIQ_FCOM), 8, '0'), 'DDMMYYYY')
+        
+        -- FILTRO REVERTIDO: Solo por liq_fcom (Fecha de Venta)
+        AND REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{7,8}$')
+        AND TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 8, '0'), 'DDMMYYYY')
         BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
         AND TO_DATE(:fecha_fin, 'DDMMYYYY')
     `;
+
+    //--${joinProcesoCupon}
 
     sqlSaldos = `
       SELECT
@@ -144,8 +240,8 @@ const getTotalesWebpay = async ({ tipo, start, end }) => {
       FROM LCN_TBK_HISTORICO liq 
       WHERE
         REGEXP_LIKE(TRIM(liq.liq_orpedi), '^\\d+$')
-        AND REGEXP_LIKE(TO_CHAR(liq.LIQ_FPAGO), '^[0-9]{8}$') -- Validar el formato DDMMYYYY
-        AND TO_DATE(LPAD(TO_CHAR(liq.LIQ_FPAGO), 8, '0'), 'DDMMYYYY')
+        AND REGEXP_LIKE(TO_CHAR(liq.liq_fpago), '^[0-9]{8}$') -- Validar el formato DDMMYYYY
+        AND TO_DATE(LPAD(TO_CHAR(liq.liq_fpago), 8, '0'), 'DDMMYYYY')
         BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
         AND TO_DATE(:fecha_fin, 'DDMMYYYY')
     `;
@@ -206,6 +302,7 @@ const getTotalesWebpay = async ({ tipo, start, end }) => {
       fecha_ini: start,
       fecha_fin: end,
     };
+
     //const res = await connection.execute(sql, binds, options);
     // Asegurar que devuelva 0 si SUM da NULL (ninguna fila encontrada)
     // if (res.rows.length > 0 && res.rows[0].saldo_estimado !== null) {
@@ -231,7 +328,6 @@ const getTotalesWebpay = async ({ tipo, start, end }) => {
       resultado.saldo_por_cobrar = resSaldos.rows[0].SALDO_POR_COBRAR || 0;
     }
 
-    console.log(sqlVentas, sqlSaldos, binds);
     return [resultado];
     //return [{ saldo_estimado: 0, saldo_por_cobrar: 0 }];
   } catch (error) {
@@ -270,25 +366,54 @@ const getTotalesWebpayPorDocumento = async ({ tipo, start, end }) => {
 
       const whereClause = `
         WHERE
-          REGEXP_LIKE(TO_CHAR(liq.LIQ_FCOM), '^[0-9]{7,8}$')
-          AND TO_DATE(LPAD(TO_CHAR(liq.LIQ_FCOM), 8, '0'), 'DDMMYYYY')
+          REGEXP_LIKE(TO_CHAR(liq.LIQ_FPAGO), '^[0-9]{8}$') 
+          AND TO_DATE(TRIM(liq.LIQ_FPAGO), 'DDMMYYYY')
               BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
                   AND TO_DATE(:fecha_fin, 'DDMMYYYY')
       `;
 
       sql = `
+        WITH AllPayments AS (
+            SELECT
+                liq.liq_orpedi, liq.LIQ_MONTO, liq.LIQ_NTC, liq.LIQ_CUOTAS,
+                NVL(h.TIPO_DOCUMENTO, 'Z5') AS BASE_TIPO_DOCUMENTO,
+                -- Cálculo de la deuda pendiente
+                (NVL(liq.LIQ_NTC, 0) - NVL(liq.LIQ_CUOTAS, 0)) * (NVL(liq.LIQ_MONTO, 0) / 100) AS DEUDA_PENDIENTE,
+                -- Identificar la última cuota pagada dentro del periodo para evitar el sobreconteo
+                ROW_NUMBER() OVER (PARTITION BY liq.liq_orpedi ORDER BY TO_DATE(TRIM(liq.LIQ_FPAGO), 'DDMMYYYY') DESC, liq.LIQ_CUOTAS DESC) as rn
+            FROM LCN_TBK_HISTORICO liq
+            ${joinClause}
+            WHERE
+              -- FILTRO DE FECHA CAMBIADO A LIQ_FPAGO
+              REGEXP_LIKE(TO_CHAR(liq.LIQ_FPAGO), '^[0-9]{8}$')
+              AND TO_DATE(TRIM(liq.LIQ_FPAGO), 'DDMMYYYY')
+                  BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
+                      AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+        )
         SELECT
-          ${labelExpr}             AS TIPO_DOCUMENTO,
-          SUM(liq.LIQ_MONTO / 100) AS saldo_estimado,
-          SUM(
-            (NVL(liq.LIQ_NTC, 0) - NVL(liq.LIQ_CUOTAS, 0)) * (NVL(liq.LIQ_MONTO, 0) / 100)
-          )                        AS saldo_por_cobrar
-        FROM LCN_TBK_HISTORICO liq
-        ${joinClause}
-        ${whereClause}
-        GROUP BY ${baseTipoDoc} 
+          t1.BASE_TIPO_DOCUMENTO || ' - Crédito' AS TIPO_DOCUMENTO,
+          -- saldo_estimado: Suma correctamente todos los abonos en el periodo por documento
+          SUM(t1.LIQ_MONTO / 100) AS saldo_estimado,
+          -- saldo_por_cobrar: Suma la DEUDA_PENDIENTE SOLO de la última cuota (rn=1)
+          SUM(CASE WHEN t1.rn = 1 THEN t1.DEUDA_PENDIENTE ELSE 0 END) AS saldo_por_cobrar
+        FROM AllPayments t1
+        GROUP BY t1.BASE_TIPO_DOCUMENTO
         ORDER BY saldo_estimado DESC
       `;
+
+      // sql = `
+      //   SELECT
+      //     ${labelExpr}             AS TIPO_DOCUMENTO,
+      //     SUM(liq.LIQ_MONTO / 100) AS saldo_estimado,
+      //     SUM(
+      //       (NVL(liq.LIQ_NTC, 0) - NVL(liq.LIQ_CUOTAS, 0)) * (NVL(liq.LIQ_MONTO, 0) / 100)
+      //     )                        AS saldo_por_cobrar
+      //   FROM LCN_TBK_HISTORICO liq
+      //   ${joinClause}
+      //   ${whereClause}
+      //   GROUP BY ${baseTipoDoc}
+      //   ORDER BY saldo_estimado DESC
+      // `;
       // Nota: Group By usa la baseTipoDoc porque el sufijo es constante para toda la query.
 
       // --- LÓGICA LDN (DÉBITO) ---
@@ -646,4 +771,5 @@ module.exports = {
   getDataHistorial,
   getCartolaExcel,
   getTotalesWebpayPorDocumento,
+  getCartolaDataAndTotals,
 };

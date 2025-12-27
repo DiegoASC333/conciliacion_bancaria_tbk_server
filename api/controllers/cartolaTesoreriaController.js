@@ -4,17 +4,13 @@ const {
   getDataHistorial,
   getCartolaExcel,
   getTotalesWebpayPorDocumento,
+  getCartolaDataAndTotals,
 } = require('../services/cartolaTesoreriaService');
 
 const getCartolaTesoreriaController = async (req, res) => {
   try {
     const { tipo, start, end } = req.body;
-    //const status = await getDataCartola({ tipo, start, end });
-
-    const [detalle, totales] = await Promise.all([
-      getDataCartola({ tipo, start, end }),
-      getTotalesWebpay({ tipo, start, end }),
-    ]);
+    const { detalle, totales } = await getCartolaDataAndTotals({ tipo, start, end });
 
     res.status(200).json({
       success: true,

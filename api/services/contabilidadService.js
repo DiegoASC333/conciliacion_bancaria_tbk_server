@@ -70,70 +70,157 @@ async function getDataDescargaExcel({ fecha_inicio, fecha_fin }) {
 async function getDataExcelPorDia({ fecha }) {
   const connection = await getConnection();
   try {
-    const sql = `SELECT
-        'ZA'                            doc,
-        TO_DATE(l.liq_fedi, 'DD/MM/RR') AS fecha_real,
-        'DEBITO'                        AS tipo,
-        l.liq_fedi                      AS fecha_texto,
-        SUM(l.liq_amt_1 / 100)          AS total_monto,
-        l.liq_ccre                      AS codigo_comercio,
-        c.nombre_comercio,
-        c.cuenta_corriente,
-        c.banco,
-        c.cuenta_contable,
-        c.descripcion,
-        (SELECT tpd.cuenta_contable 
-         FROM vec_cob02.tipo_pago_descripcion tpd
-         WHERE tpd.clase_documento_sap = 'ZA'
-         FETCH FIRST 1 ROW ONLY) AS cuenta_transaccion
-    FROM
-        ldn_tbk_historico         l
-        LEFT JOIN vec_cob04.codigo_comerico c ON c.codigo_comerico = l.liq_ccre
-    WHERE
-            TO_DATE(l.liq_fedi, 'DD/MM/RR') = :fecha
-        AND l.liq_ccre NOT IN ( '28208820', '48211418', '41246590', '41246593', '41246594' )
-    GROUP BY
-        l.liq_fedi,
-        l.liq_ccre,
-        c.nombre_comercio,
-        c.cuenta_corriente,
-        c.banco,
-        c.cuenta_contable,
-        c.descripcion
-    UNION ALL
-    SELECT
-        'ZB'                           doc,
-        TO_DATE(liq_fpago, 'DDMMYYYY') AS fecha_real,
-        'CREDITO'                      AS tipo,
-        liq_fpago                      AS fecha_texto,
-        SUM(trunc(liq_monto / 100))    AS total_monto,
-        NULL                           AS codigo_comercio,
-        NULL                           AS nombre_comercio,
-        NULL                           AS cuenta_corriente,
-        NULL                           AS banco,
-        '1101050021'                           AS cuenta_contable,
-        NULL                           AS descripcion,
-        (SELECT tpd.cuenta_contable 
-         FROM vec_cob02.tipo_pago_descripcion tpd
-         WHERE tpd.clase_documento_sap = 'ZB'
-         FETCH FIRST 1 ROW ONLY) AS cuenta_transaccion
-    FROM
-        lcn_tbk_historico
-    WHERE
-        TO_DATE(liq_fpago, 'DDMMYYYY') = :fecha
-    GROUP BY
-        liq_fpago
-    ORDER BY
-        fecha_real,
-        tipo,
-        total_monto DESC `;
+    // La consulta se define con una única cláusula WITH al inicio
+    const sql = `
+      WITH Clases_Documento_Unicas_C AS (
+          SELECT
+              l.liq_monto, l.liq_orpedi, l.liq_codaut, l.liq_fcom,
+              TO_DATE(l.liq_fpago, 'DDMMYYYY') AS FECHA_REAL, 'CREDITO' AS TIPO, NULL AS FECHA_TEXTO, NULL AS CODIGO_COMERCIO,
+              NULL AS NOMBRE_COMERCIO, NULL AS CUENTA_CORRIENTE, NULL AS BANCO, '1101050021' AS CUENTA_CONTABLE_COMERCIO, NULL AS DESCRIPCION,
+              NVL(h.tipo_documento, 'Z5') AS clase_doc_final, 
+              ROW_NUMBER() OVER (PARTITION BY l.liq_orpedi, l.liq_codaut, l.liq_fcom ORDER BY h.tipo_documento DESC) AS rn
+          FROM
+              lcn_tbk_historico l
+          LEFT JOIN 
+              CCN_TBK_HISTORICO h ON
+              (
+                  REGEXP_LIKE(TRIM(l.liq_orpedi), '^[0-9]*[1-9][0-9]*$') AND LTRIM(TRIM(l.liq_orpedi), '0') = LTRIM(TRIM(h.DKTT_DT_NUMERO_UNICO), '0')
+              ) OR (
+                  NOT REGEXP_LIKE(TRIM(l.liq_orpedi), '^[0-9]*[1-9][0-9]*$') AND TRIM(l.liq_codaut) = h.DKTT_DT_APPRV_CDE
+              )
+              
+              -- --- AJUSTE ORA-01858 (CRÉDITO): Protege TO_DATE de valores no numéricos en la unión.
+              AND TO_DATE(
+                  CASE WHEN REGEXP_LIKE(TO_CHAR(l.liq_fcom), '^[0-9]{7,8}$') THEN LPAD(TO_CHAR(l.liq_fcom), 8, '0') ELSE NULL END, 
+                  'DDMMYYYY'
+              ) = TO_DATE(
+                  CASE WHEN REGEXP_LIKE(TO_CHAR(h.DKTT_DT_TRAN_DAT), '^[0-9]{5,6}$') THEN LPAD(TO_CHAR(h.DKTT_DT_TRAN_DAT), 6, '0') ELSE NULL END, 
+                  'RRMMDD'
+              )
+              
+          WHERE
+              -- --- AJUSTE FILTRO (CRÉDITO): Asegura la igualdad de fechas a nivel de día.
+              TRUNC(TO_DATE(l.liq_fpago, 'DDMMYYYY')) = TRUNC(TO_DATE(:fecha, 'DD/MM/YYYY'))
+      ),
+      Consolidacion_Final_C AS (
+          SELECT
+              cdu.FECHA_REAL, cdu.TIPO, cdu.FECHA_TEXTO, cdu.CODIGO_COMERCIO, cdu.NOMBRE_COMERCIO, 
+              cdu.CUENTA_CORRIENTE, cdu.BANCO, cdu.CUENTA_CONTABLE_COMERCIO, cdu.DESCRIPCION,
+              CASE WHEN cdu.clase_doc_final = 'ZC' THEN 'ZB' ELSE cdu.clase_doc_final END AS clase_consolidada,
+              cdu.liq_monto
+          FROM Clases_Documento_Unicas_C cdu
+          WHERE cdu.rn = 1
+      ),
+      Clases_Documento_Unicas_D AS (
+          SELECT
+              l.liq_amt_1, l.liq_nro_unico, l.liq_appr, l.liq_fcom,
+              TO_DATE(l.liq_fedi, 'DD/MM/RR') AS FECHA_REAL, 'DEBITO' AS TIPO, l.liq_fedi AS FECHA_TEXTO, l.liq_ccre AS CODIGO_COMERCIO_ID,
+              NVL(h.tipo_documento, 'Z5') AS clase_doc_final, 
+              ROW_NUMBER() OVER (PARTITION BY l.liq_nro_unico, l.liq_appr, l.liq_fcom, l.liq_amt_1 ORDER BY h.tipo_documento DESC) AS rn
+          FROM
+              ldn_tbk_historico l
+          LEFT JOIN CDN_TBK_HISTORICO h ON
+              (
+                  REGEXP_LIKE(TRIM(l.liq_nro_unico), '^[0-9]*[1-9][0-9]*$') AND LTRIM(TRIM(l.liq_nro_unico), '0') = LTRIM(TRIM(h.DSK_ID_NRO_UNICO), '0')
+              ) OR (
+                  NOT REGEXP_LIKE(TRIM(l.liq_nro_unico), '^[0-9]*[1-9][0-9]*$') AND TRIM(l.liq_appr) = h.DSK_APPVR_CDE
+              )
+              
+              -- --- AJUSTE ORA-01858 (DÉBITO): Protege TO_DATE de valores no numéricos en la unión.
+              AND TO_DATE(
+                  CASE WHEN REGEXP_LIKE(TO_CHAR(l.liq_fcom), '^[0-9]{5,6}$') THEN LPAD(TO_CHAR(l.liq_fcom), 6, '0') ELSE NULL END, 
+                  'DDMMRR'
+              ) = TO_DATE(
+                  CASE WHEN REGEXP_LIKE(TO_CHAR(h.DSK_TRAN_DAT), '^[0-9]{5,6}$') THEN LPAD(TO_CHAR(h.DSK_TRAN_DAT), 6, '0') ELSE NULL END, 
+                  'RRMMDD'
+              )
+              AND l.LIQ_AMT_1 = h.DSK_AMT_1
+          WHERE
+              -- --- AJUSTE FILTRO (DÉBITO): Asegura la igualdad de fechas a nivel de día.
+              TRUNC(TO_DATE(l.liq_fedi, 'DD/MM/RR')) = TRUNC(TO_DATE(:fecha, 'DD/MM/YYYY')) 
+              AND l.liq_ccre NOT IN ( '28208820', '48211418', '41246590', '41246593', '41246594' )
+      ),
+      Consolidacion_Final_D AS (
+          SELECT
+              cdu.FECHA_REAL, cdu.TIPO, cdu.FECHA_TEXTO, cdu.CODIGO_COMERCIO_ID, 
+              CASE WHEN cdu.clase_doc_final IN ('ZA', 'ZC') THEN 'ZA' ELSE cdu.clase_doc_final END AS clase_consolidada,
+              cdu.liq_amt_1
+          FROM Clases_Documento_Unicas_D cdu
+          WHERE cdu.rn = 1
+      ),
+      Cuenta_Factores AS (
+          SELECT clase_documento_sap AS clase_consolidada, COUNT(DISTINCT CUENTA_CONTABLE) AS factor_multiplicador
+          FROM vec_cob02.tipo_pago_descripcion
+          GROUP BY clase_documento_sap
+      ),
+      Suma_Consolidada_C AS (
+          SELECT clase_consolidada, SUM(TRUNC(liq_monto / 100)) AS monto_total_correcto
+          FROM Consolidacion_Final_C
+          GROUP BY clase_consolidada
+      ),
+      Suma_Consolidada_D AS (
+          SELECT cf.clase_consolidada, cf.CODIGO_COMERCIO_ID, SUM(cf.liq_amt_1 / 100) AS monto_total_correcto
+          FROM Consolidacion_Final_D cf
+          GROUP BY cf.clase_consolidada, cf.CODIGO_COMERCIO_ID
+      )
+      -- RAMA 1: CRÉDITO
+      SELECT
+          cf.clase_consolidada AS CLASE_DOCUMENTO, cf.FECHA_REAL, cf.TIPO, cf.FECHA_TEXTO,
+          sc.monto_total_correcto / NVL(af.factor_multiplicador, 1) AS TOTAL_MONTO, 
+          cf.CODIGO_COMERCIO, cf.NOMBRE_COMERCIO, cf.CUENTA_CORRIENTE, cf.BANCO, 
+          cf.CUENTA_CONTABLE_COMERCIO, cf.DESCRIPCION, tpd_za.CUENTA_CONTABLE AS CUENTA_TRANSACCION
+      FROM
+          Consolidacion_Final_C cf
+      LEFT JOIN vec_cob02.tipo_pago_descripcion tpd_za 
+          ON tpd_za.clase_documento_sap = cf.clase_consolidada
+      LEFT JOIN Cuenta_Factores af
+          ON af.clase_consolidada = cf.clase_consolidada
+      LEFT JOIN Suma_Consolidada_C sc
+          ON sc.clase_consolidada = cf.clase_consolidada
+      GROUP BY
+          cf.clase_consolidada, cf.FECHA_REAL, cf.TIPO, cf.FECHA_TEXTO,
+          sc.monto_total_correcto / NVL(af.factor_multiplicador, 1),
+          cf.CODIGO_COMERCIO, cf.NOMBRE_COMERCIO, cf.CUENTA_CORRIENTE, cf.BANCO, 
+          cf.CUENTA_CONTABLE_COMERCIO, cf.DESCRIPCION, tpd_za.CUENTA_CONTABLE
+
+      UNION ALL
+
+      -- RAMA 2: DÉBITO
+      SELECT
+          cf.clase_consolidada AS CLASE_DOCUMENTO, cf.FECHA_REAL, cf.TIPO, cf.FECHA_TEXTO,
+          sc.monto_total_correcto / NVL(af.factor_multiplicador, 1) AS TOTAL_MONTO,
+          cf.CODIGO_COMERCIO_ID AS CODIGO_COMERCIO, c.nombre_comercio AS NOMBRE_COMERCIO,
+          c.cuenta_corriente AS CUENTA_CORRIENTE, c.banco AS BANCO, 
+          c.cuenta_contable AS CUENTA_CONTABLE_COMERCIO, c.descripcion AS DESCRIPCION,
+          tpd_za.CUENTA_CONTABLE AS CUENTA_TRANSACCION
+      FROM
+          Consolidacion_Final_D cf
+      LEFT JOIN vec_cob04.codigo_comerico c 
+          ON c.codigo_comerico = cf.CODIGO_COMERCIO_ID
+      LEFT JOIN vec_cob02.tipo_pago_descripcion tpd_za
+          ON tpd_za.clase_documento_sap = cf.clase_consolidada
+      LEFT JOIN Cuenta_Factores af
+          ON af.clase_consolidada = cf.clase_consolidada
+      LEFT JOIN Suma_Consolidada_D sc
+          ON sc.clase_consolidada = cf.clase_consolidada AND sc.CODIGO_COMERCIO_ID = cf.CODIGO_COMERCIO_ID
+      GROUP BY
+          cf.clase_consolidada, cf.FECHA_REAL, cf.TIPO, cf.FECHA_TEXTO,
+          sc.monto_total_correcto / NVL(af.factor_multiplicador, 1),
+          cf.CODIGO_COMERCIO_ID, c.nombre_comercio, c.cuenta_corriente, c.banco, 
+          c.cuenta_contable, c.descripcion, tpd_za.CUENTA_CONTABLE
+      ORDER BY
+          FECHA_REAL, CLASE_DOCUMENTO
+    `;
 
     const res = await connection.execute(sql, { fecha }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
     return res.rows || [];
   } finally {
     try {
       await connection.close();
-    } catch {}
+    } catch (err) {
+      console.error('Error closing connection:', err);
+      // Opcional: manejar el error de cierre, aunque generalmente se ignora.
+    }
   }
 }
 
@@ -235,9 +322,9 @@ async function generarReporte(dataRows, fechaConsulta) {
     worksheet.getRow(rowNumber).font = { bold: true };
   });
 
-  worksheet.getColumn('B').numFmt = 'dd/mm/yyyy'; // BLDAT
-  worksheet.getColumn('E').numFmt = 'dd/mm/yyyy'; // BUDAT
-  worksheet.getColumn('N').numFmt = 'dd/mm/yyyy'; // VALUT
+  worksheet.getColumn('B').numFmt = 'dd.mm.yyyy'; // BLDAT
+  worksheet.getColumn('E').numFmt = 'dd.mm.yyyy'; // BUDAT
+  worksheet.getColumn('N').numFmt = 'dd.mm.yyyy'; // VALUT
 
   worksheet.getColumn('M').numFmt = '#,##0'; // WRBTR
   worksheet.getColumn('R').numFmt = '#,##0'; // WRBTR_01
@@ -250,12 +337,15 @@ async function generarReporte(dataRows, fechaConsulta) {
   dataRows.forEach((row, index) => {
     //const incremental = index + 1;
 
+    const fechaFormateada = formatFechaSAP(row.FECHA_REAL);
+    const montoFormateado = formatMonto(row.TOTAL_MONTO);
+
     const excelRow = [
-      row.DOC, // 1. DOC
-      row.FECHA_REAL, // 2. BLDAT (Fecha doc)
+      row.CLASE_DOCUMENTO, // 1. DOC (Antes era row.DOC)
+      fechaFormateada, // 2. BLDAT (Fecha doc)
       'CB', // 3. BLART (Fijo)
       'UT01', // 4. BURSK (Fijo de headerRow2)
-      row.FECHA_REAL, // 5. BUDAT (Fecha contab)
+      fechaFormateada, // 5. BUDAT (Fecha contab)
       mesContableNum, // 6. MONAT (Calculado)
       'CLP', // 7. WAERS (Fijo)
       'TRANSBANK', // 8. XBLNR (Fijo)
@@ -263,27 +353,50 @@ async function generarReporte(dataRows, fechaConsulta) {
       '*/', // 10. DOCID (Fijo)
       '40', // 11. NEWBS (Fijo)
       //row.CUENTA_CORRIENTE, // 12. NEWKO (Dato de la query, será null para 'ZB')
-      row.CUENTA_CONTABLE,
-      row.TOTAL_MONTO, // 13. WRBTR (Dato de la query)
-      row.FECHA_REAL, // 14. VALUT (Fecha valor)
+      row.CUENTA_CONTABLE_COMERCIO,
+      montoFormateado, // 13. WRBTR (Dato de la query)
+      fechaFormateada, // 14. VALUT (Fecha valor)
       textoPosicion, // 15. SGTXT (Calculado)
       '50', // 16. NEWBS_01 (Fijo)
       //'1101010051', // 17. NEWKO_01 (Fijo)
       row.CUENTA_TRANSACCION,
-      row.TOTAL_MONTO, // 18. WRBTR_01 (Dato de la query)
+      montoFormateado, // 18. WRBTR_01 (Dato de la query)
       textoPosicion, // 19. SGTXT_01 (Calculado, asumimos igual a SGTXT)
     ];
 
     worksheet.addRow(excelRow);
   });
 
-  //return workbook.xlsx.writeBuffer();
-  return workbook.csv.writeBuffer();
+  return workbook.xlsx.writeBuffer();
+  //return workbook.csv.writeBuffer();
 
   // --- 2.6 Guardar Archivo ---
   // const nombreArchivo = 'Reporte_SAP.xlsx';
   // await workbook.xlsx.writeFile(nombreArchivo);
   // console.log(`¡Reporte generado exitosamente: ${nombreArchivo}!`);
+}
+
+function formatFechaSAP(date) {
+  if (!(date instanceof Date) || isNaN(date)) {
+    return '';
+  }
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const year = date.getUTCFullYear();
+
+  // Formato: DD.MM.YYYY HH:MM:SS
+  return `${day}.${month}.${year}`;
+}
+
+function formatMonto(number) {
+  if (typeof number !== 'number' || isNaN(number)) {
+    return '0';
+  }
+
+  return new Intl.NumberFormat('es-CL', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(number);
 }
 
 module.exports = {

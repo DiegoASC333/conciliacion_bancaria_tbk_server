@@ -117,6 +117,15 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
   END
 `;
 
+  // const orderBy = `
+  //   ORDER BY
+  //     CASE
+  //       WHEN REGEXP_LIKE(TRIM(${cuponExpr}), '^[0-9]+$') THEN TO_NUMBER(TRIM(${cuponExpr}))
+  //       ELSE NULL
+  //     END NULLS LAST,
+  //     l.date_load_bbdd DESC NULLS LAST
+  // `;
+
   const orderBy = `
     ORDER BY
       CASE
@@ -124,7 +133,7 @@ function buildLiquidacionQuery({ tipo, startLCN, startLDN }) {
         ELSE NULL
       END NULLS LAST,
       l.date_load_bbdd DESC NULLS LAST
-  `;
+    `;
 
   // === Indicador de validez (SI / NO) ===
   const esValidoExpr =
@@ -185,6 +194,7 @@ function buildCartolaQuery({ tipo, start, end }) {
   if (tipo === 'LCN') {
     const lcn_l_dateFormat = 'DDMMYYYY';
     const lcn_h_dateFormat = 'RRMMDD';
+
     const fechaAbono = `TO_CHAR(TO_DATE(TRIM(liq.liq_fpago), 'DDMMYYYY'), 'DD/MM/YYYY')`;
 
     const fechaVenta = `
@@ -194,6 +204,8 @@ function buildCartolaQuery({ tipo, start, end }) {
         ELSE NULL
       END
     `;
+
+    //const cutOffDate = '01102025'; // 1 de Octubre de 2025
 
     joinWebpay = `LEFT JOIN (
          SELECT id_sesion, orden_compra
@@ -228,28 +240,46 @@ function buildCartolaQuery({ tipo, start, end }) {
         id_lcn as id,
         ${cuponExpr}              AS CUPON,
         liq.liq_codaut as CODIGO_AUTORIZACION,
-        ${fechaVenta} AS fecha_venta,
-        ROUND(h.DKTT_DT_AMT_1/100) AS monto_total_venta,
+        ${fechaVenta} AS FECHA_VENTA,
+        COALESCE(ROUND(h.DKTT_DT_AMT_1/100), ROUND(liq.liq_monto/100) * liq.liq_ntc) AS VENTA_TOTAL_ORIGINAL,
         COALESCE(TO_CHAR(pc.rut), TO_CHAR(wt.orden_compra)) AS RUT,
-        ROUND(liq.liq_monto/100) AS monto,
-        liq.liq_cuotas AS cuota,          
-        liq.liq_ntc AS total_cuotas,
+        --ROUND(liq.liq_monto/100) AS monto,
+        CASE
+          WHEN TO_DATE(LPAD(TRIM(liq.liq_fpago), 8, '0'), 'DDMMYYYY') > TO_DATE(:fecha_fin, 'DDMMYYYY')
+          THEN 0
+          ELSE ROUND(liq.liq_monto/100)
+        END AS MONTO,
+        liq.liq_cuotas AS CUOTA,          
+        liq.liq_ntc AS TOTAL_CUOTAS,
         TRIM(liq.liq_rete) AS RETE,       
-        ${fechaAbono} AS fecha_abono,
+        ${fechaAbono} AS FECHA_ABONO,
         COALESCE(
           h.TIPO_DOCUMENTO, -- 1. Prioridad
           REGEXP_SUBSTR(JSON_VALUE(pc.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+'),
           'Z5'
-        ) AS TIPO_DOCUMENTO
+        ) AS TIPO_DOCUMENTO,
+        CASE
+          WHEN TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 8, '0'), 'DDMMYYYY')
+              BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY') AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+              AND liq.liq_cuotas = 1 -- Mantenemos esto, pero revisa si hay ventas sin cuota 1
+          THEN 1 ELSE 0
+        END AS ES_VENTA_PERIODO,
+        CASE
+          WHEN TO_DATE(LPAD(TRIM(liq.liq_fpago), 8, '0'), 'DDMMYYYY')
+              BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY') AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+          THEN 1 ELSE 0
+        END AS ES_ABONO_PERIODO
       FROM LCN_TBK_HISTORICO liq
       ${joinWebpay}
       ${joinDocumento}
       ${joinProcesoCupon}
       WHERE REGEXP_LIKE(TRIM(liq.liq_orpedi), '^\\d+$')
-        AND REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{7,8}$')
-        AND TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 8, '0'), 'DDMMYYYY')
-            BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
-                AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+      AND REGEXP_LIKE(TRIM(liq.liq_fpago), '^[0-9]{7,8}$')        
+      AND (
+        (TO_DATE(LPAD(TRIM(liq.liq_fpago), 8, '0'), 'DDMMYYYY') BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY') AND TO_DATE(:fecha_fin, 'DDMMYYYY'))
+        OR 
+        (TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 8, '0'), 'DDMMYYYY') BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY') AND TO_DATE(:fecha_fin, 'DDMMYYYY'))
+      )
     `;
   } else if (tipo === 'LDN') {
     const ldn_l_dateFormat = 'DDMMRR';
@@ -304,7 +334,7 @@ function buildCartolaQuery({ tipo, start, end }) {
       SELECT
         id_ldn as id,
         ${cuponExpr}              AS CUPON,
-        liq.liq_appr as codigo_autorizacion,
+        liq.liq_appr as CODIGO_AUTORIZACION,
         ${fechaVenta} AS fecha_venta,
         COALESCE(TO_CHAR(pc.rut), TO_CHAR(wt.orden_compra)) AS RUT,
         TRUNC(liq.liq_amt_1/100) AS monto,
@@ -318,17 +348,52 @@ function buildCartolaQuery({ tipo, start, end }) {
           h.TIPO_DOCUMENTO, -- 1. Prioridad
           REGEXP_SUBSTR(JSON_VALUE(pc.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+'), 
           'Z5'
-        ) AS TIPO_DOCUMENTO
+        ) AS TIPO_DOCUMENTO,
+        CASE
+          WHEN REGEXP_LIKE(TRIM(liq.liq_fedi), '^[0-9]{2}/[0-9]{2}/[0-9]{2}$') AND 
+               TO_DATE(TRIM(liq.liq_fedi), 'DD/MM/RR') > TO_DATE(:fecha_fin, 'DDMMYYYY')
+          THEN TRUNC(liq.liq_amt_1/100)
+          ELSE 0
+        END AS MONTO_PENDIENTE,
+        -- INDICADOR 1: ¿Es una venta realizada en el periodo?
+        CASE
+          WHEN REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{5,6}$') AND 
+              TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 6, '0'), 'DDMMRR') 
+              BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY') AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+          THEN 1 ELSE 0
+        END AS ES_VENTA_PERIODO,
+        -- INDICADOR 2: ¿Es un abono recibido en el periodo?
+        CASE
+          WHEN REGEXP_LIKE(TRIM(liq.liq_fedi), '^[0-9]{2}/[0-9]{2}/[0-9]{2}$') AND 
+              TO_DATE(TRIM(liq.liq_fedi), 'DD/MM/RR') 
+              BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY') AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+          THEN 1 ELSE 0
+        END AS ES_ABONO_PERIODO
       FROM LDN_TBK_HISTORICO liq 
       ${joinWebpay}
       ${joinDocumento}
       ${joinProcesoCupon}
       WHERE REGEXP_LIKE(TRIM(liq.liq_nro_unico), '^\\d+$')
-        AND REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{5,6}$')
-        AND TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 6, '0'), 'DDMMRR')
-            BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
-                AND TO_DATE(:fecha_fin, 'DDMMYYYY')
-    `;
+      AND (
+        -- Escenario A: Movimientos que se ABONARON en el rango
+        (
+          REGEXP_LIKE(TRIM(liq.liq_fedi), '^[0-9]{2}/[0-9]{2}/[0-9]{2}$') 
+          AND TO_DATE(TRIM(liq.liq_fedi), 'DD/MM/RR') 
+              BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY') AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+        )
+        OR 
+        -- Escenario B: Movimientos que se VENDIERON en el rango (pero quizás se abonan después)
+        (
+          REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{5,6}$') 
+          AND TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 6, '0'), 'DDMMRR') 
+              BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY') AND TO_DATE(:fecha_fin, 'DDMMYYYY')
+        )
+      )
+      `;
+
+    // AND TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 6, '0'), 'DDMMRR')
+    //         BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY')
+    //             AND TO_DATE(:fecha_fin, 'DDMMYYYY')
   }
 
   return { sql, binds };

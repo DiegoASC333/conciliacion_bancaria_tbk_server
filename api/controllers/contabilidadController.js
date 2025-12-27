@@ -34,7 +34,7 @@ const getReporteTransacciones = async (req, res) => {
 };
 
 async function getReportePorDia(req, res) {
-  const { fecha } = req.body;
+  const { fecha } = req.body; // fecha es la cadena, ej: "01/10/2025"
 
   if (!fecha) {
     return res.status(400).json({ mensaje: 'Debe proporcionar una fecha para generar el Excel.' });
@@ -44,15 +44,8 @@ async function getReportePorDia(req, res) {
   if (parts.length !== 3) {
     return res.status(400).json({ mensaje: 'Formato de fecha inválido. Se esperaba DD/MM/YYYY.' });
   }
-
-  const fechaConsulta = new Date(parts[2], parts[1] - 1, parts[0]);
-
-  if (isNaN(fechaConsulta.getTime())) {
-    return res.status(400).json({ mensaje: 'Fecha inválida (ej. 31/02/2025).' });
-  }
-
   try {
-    const datos = await getDataExcelPorDia({ fecha: fechaConsulta });
+    const datos = await getDataExcelPorDia({ fecha: fecha });
 
     if (datos.length === 0) {
       return res
@@ -60,20 +53,19 @@ async function getReportePorDia(req, res) {
         .json({ mensaje: 'No se encontraron datos para la fecha seleccionada.' });
     }
 
-    const fileBuffer = await generarReporte(datos, fechaConsulta);
+    // Si necesitas el objeto Date para generar el reporte (generarReporte),
+    // puedes crearlo aquí usando la cadena 'fecha'.
+    const fechaConsultaParaReporte = new Date(parts[2], parts[1] - 1, parts[0]);
 
-    // res.setHeader(
-    //   'Content-Type',
-    //   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    // );
-    // res.setHeader('Content-Disposition', 'attachment; filename=' + 'Reporte_SAP.xlsx');
+    const fileBuffer = await generarReporte(datos, fechaConsultaParaReporte);
 
-    // res.send(fileBuffer);
-
-    res.setHeader('Content-Type', 'text/csv');
-
-    res.setHeader('Content-Disposition', 'attachment; filename=' + 'Reporte_SAP.csv');
-
+    //res.setHeader('Content-Type', 'text/csv');
+    //res.setHeader('Content-Disposition', 'attachment; filename=' + 'Reporte_SAP.csv');
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader('Content-Disposition', 'attachment; filename=' + 'Reporte_SAP.xlsx');
     res.send(fileBuffer);
   } catch (err) {
     res.status(500).json({ mensaje: 'Error al generar Excel', error: err.message });
