@@ -42,6 +42,7 @@ const {
   getReportePorDia,
 } = require('./controllers/contabilidadController.js');
 const { SaldoPendienteController } = require('./controllers/SaldoPendienteController.js');
+const { getVentasController } = require('./controllers/reporteVentaController.js');
 
 //Rutas
 router.post('/ejecutar-script', ejecutarScript); //ejecucion manual de script remoto
@@ -72,5 +73,6 @@ router.post('/descargar-excel', getReporteTransacciones); //totales para excel c
 router.post('/descargar-excel-dia', getReportePorDia);
 router.post('/totales-documento-cartola', getTotalesPorDocumento);
 router.post('/saldo-pendiente', SaldoPendienteController); // saldo pendiente
+router.post('/reporte-ventas', getVentasController); // reporte de ventas por transacción tipo
 
 module.exports = router;
