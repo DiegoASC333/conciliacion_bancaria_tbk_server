@@ -306,4 +306,77 @@ function buildCartolaQuery({ tipo, start, end }) {
   return { sql, binds };
 }
 
-module.exports = { buildLiquidacionQuery, buildCartolaQuery };
+function buildVentasQuery({ tipo, start, end }) {
+  let sql;
+  const tipoUpper = (tipo || '').toUpperCase();
+
+  // Mantenemos tu validador de columnas
+  const isValid = (col) => `REGEXP_LIKE(TRIM(${col}), '^[0-9]*[1-9][0-9]*$')`;
+
+  // 1. Definimos cuponExpr usando alias de tabla 't' para evitar ambigüedad con el JOIN
+  const cuponExpr =
+    tipoUpper === 'CCN'
+      ? `CASE 
+        WHEN ${isValid('t.dktt_dt_numero_unico')} THEN LTRIM(TRIM(t.dktt_dt_numero_unico), '0') 
+        ELSE LTRIM(TRIM(t.dktt_dt_apprv_cde), '0') 
+       END`
+      : `CASE 
+        WHEN ${isValid('t.dsk_id_nro_unico')} THEN LTRIM(TRIM(t.dsk_id_nro_unico), '0') 
+        ELSE LTRIM(TRIM(t.dsk_appvr_cde), '0') 
+       END`;
+
+  // 2. Definimos el JOIN (el RUT viene de la tabla pc)
+  const joinProcesoCupon = `
+      LEFT JOIN PROCESO_CUPON pc 
+        ON LTRIM(TRIM(pc.CUPON), '0') = ${cuponExpr}`;
+
+  const formatDateForOracle = (dateStr) => {
+    if (!dateStr) return null;
+    return dateStr.replace(/-/g, '').substring(2);
+  };
+
+  const startOracle = formatDateForOracle(start);
+  const endOracle = formatDateForOracle(end);
+
+  const binds = {
+    fecha_ini: startOracle,
+    fecha_fin: endOracle,
+  };
+
+  if (tipoUpper === 'CCN') {
+    sql = `SELECT 
+        t.id_ccn as id,
+        t.dktt_dt_tran_dat as fecha_venta, 
+        (t.dktt_dt_amt_1/100) as monto_venta, 
+        CASE 
+          WHEN t.dktt_dt_canti_cuotas IS NULL  THEN 1
+          ELSE t.dktt_dt_canti_cuotas 
+        END as cuotas, 
+        t.dktt_dt_apprv_cde as codigo_autorizacion, 
+        ${cuponExpr} as cupon,
+        t.tipo_documento,
+        pc.RUT as rut
+    FROM 
+        ccn_tbk_historico t
+    ${joinProcesoCupon}
+    WHERE 
+        t.dktt_dt_tran_dat BETWEEN :fecha_ini AND :fecha_fin`;
+  } else if (tipoUpper === 'CDN') {
+    sql = `SELECT 
+          t.id_cdn as id,
+          t.dsk_tran_dat as fecha_venta, 
+          (t.dsk_amt_1/100) as monto_venta, 
+          t.dsk_appvr_cde as codigo_autorizacion,
+          ${cuponExpr} as cupon,
+          t.tipo_documento,
+          pc.RUT as rut 
+      FROM 
+          cdn_tbk_historico t
+      ${joinProcesoCupon}
+      WHERE t.dsk_tran_dat BETWEEN :fecha_ini AND :fecha_fin`;
+  }
+
+  return { sql, binds };
+}
+
+module.exports = { buildLiquidacionQuery, buildCartolaQuery, buildVentasQuery };
