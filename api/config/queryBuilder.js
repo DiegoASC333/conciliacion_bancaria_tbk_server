@@ -241,29 +241,45 @@ function buildCartolaQuery({ tipo, start, end }) {
         ${cuponExpr}              AS CUPON,
         liq.liq_codaut as CODIGO_AUTORIZACION,
         ${fechaVenta} AS FECHA_VENTA,
-        COALESCE(ROUND(h.DKTT_DT_AMT_1/100), ROUND(liq.liq_monto/100) * liq.liq_ntc) AS VENTA_TOTAL_ORIGINAL,
+        
+        -- AJUSTE: Siempre calcular el total de la venta original desde la tabla liq 
+        -- para que no dependa de si el abono ya ocurrió o no.
+        COALESCE(
+          ROUND(h.DKTT_DT_AMT_1/100), 
+          ROUND(liq.liq_monto/100) * liq.liq_ntc
+        ) AS VENTA_TOTAL_ORIGINAL,
+        
         COALESCE(TO_CHAR(pc.rut), TO_CHAR(wt.orden_compra)) AS RUT,
-        --ROUND(liq.liq_monto/100) AS monto,
+
+        -- Este es el abono del periodo (Cajita Verde)
         CASE
           WHEN TO_DATE(LPAD(TRIM(liq.liq_fpago), 8, '0'), 'DDMMYYYY') > TO_DATE(:fecha_fin, 'DDMMYYYY')
           THEN 0
           ELSE ROUND(liq.liq_monto/100)
         END AS MONTO,
+
+        -- Agregamos el monto real de la cuota (sin filtro de fecha) para cálculos internos
+        ROUND(liq.liq_monto/100) AS MONTO_CUOTA_REAL,
+
         liq.liq_cuotas AS CUOTA,          
         liq.liq_ntc AS TOTAL_CUOTAS,
         TRIM(liq.liq_rete) AS RETE,       
         ${fechaAbono} AS FECHA_ABONO,
         COALESCE(
-          h.TIPO_DOCUMENTO, -- 1. Prioridad
+          h.TIPO_DOCUMENTO,
           REGEXP_SUBSTR(JSON_VALUE(pc.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+'),
           'Z5'
         ) AS TIPO_DOCUMENTO,
+
+        -- AJUSTE: La venta del periodo debe marcarse aunque el abono sea futuro
         CASE
           WHEN TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 8, '0'), 'DDMMYYYY')
               BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY') AND TO_DATE(:fecha_fin, 'DDMMYYYY')
-              AND liq.liq_cuotas = 1 -- Mantenemos esto, pero revisa si hay ventas sin cuota 1
+              -- En lugar de liq.liq_cuotas = 1, podrías usar una lógica de "Mínima cuota encontrada"
+              -- Pero por ahora, asegúrate que la fecha de compra (fcom) sea la que manda.
           THEN 1 ELSE 0
         END AS ES_VENTA_PERIODO,
+
         CASE
           WHEN TO_DATE(LPAD(TRIM(liq.liq_fpago), 8, '0'), 'DDMMYYYY')
               BETWEEN TO_DATE(:fecha_ini, 'DDMMYYYY') AND TO_DATE(:fecha_fin, 'DDMMYYYY')
@@ -317,7 +333,7 @@ function buildCartolaQuery({ tipo, start, end }) {
           NOT ${isValid('liq.liq_nro_unico')} AND
           TRIM(liq.liq_appr) = h.DSK_APPVR_CDE
         )
-        AND REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{5,6}$')
+         AND REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{5,6}$')
         AND REGEXP_LIKE(TO_CHAR(h.DSK_TRAN_DAT), '^[0-9]{5,6}$')
         AND TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 6, '0'), '${ldn_l_dateFormat}') = TO_DATE(LPAD(TO_CHAR(h.DSK_TRAN_DAT), 6, '0'), '${ldn_h_dateFormat}')
         AND liq.LIQ_AMT_1 = h.DSK_AMT_1 
@@ -335,15 +351,15 @@ function buildCartolaQuery({ tipo, start, end }) {
         id_ldn as id,
         ${cuponExpr}              AS CUPON,
         liq.liq_appr as CODIGO_AUTORIZACION,
-        ${fechaVenta} AS fecha_venta,
+        ${fechaVenta} AS FECHA_VENTA,
         COALESCE(TO_CHAR(pc.rut), TO_CHAR(wt.orden_compra)) AS RUT,
-        TRUNC(liq.liq_amt_1/100) AS monto,
-        1 AS cuota,
-        1 AS total_cuotas,
-        0 AS cuotas_restantes,
-        TRUNC(liq.liq_amt_1/100) AS deuda_pagada,
-        0 AS deuda_por_pagar,
-        ${fechaAbono} AS fecha_abono,
+        TRUNC(liq.liq_amt_1/100) AS MONTO,
+        1 AS CUOTA,
+        1 AS TOTAL_CUOTAS,
+        0 AS CUOTAS_REMANENTES,
+        TRUNC(liq.liq_amt_1/100) AS DEUDA_PAGADA,
+        0 AS DEUDA_POR_PAGAR,
+        ${fechaAbono} AS FECHA_ABONO,
         COALESCE(
           h.TIPO_DOCUMENTO, -- 1. Prioridad
           REGEXP_SUBSTR(JSON_VALUE(pc.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+'), 

@@ -4,64 +4,72 @@ const oracledb = require('oracledb');
 
 async function getCartolaDataAndTotals({ tipo, start, end }) {
   const detalle = await getDataCartola({ tipo, start, end });
-  const totales = calcularTotalesEnNode(detalle, tipo);
+  const totales = await calcularTotalesEnNode(detalle, tipo);
 
   return { detalle, totales };
 }
 
 function calcularTotalesEnNode(detalle, tipo) {
   const resultado = {
-    saldo_estimado: 0, // Representa la "Cajita Verde" (Total Abonos/Ingresos)
-    saldo_por_cobrar: 0, // Representa la "Cajita Amarilla" (Diferencia)
-    saldo_total_ventas: 0, // Representa la "Cajita Azul" (Total Ventas Únicas)
+    saldo_estimado: 0, // Cajita Verde
+    saldo_por_cobrar: 0, // Cajita Amarilla
+    saldo_total_ventas: 0, // Cajita Azul
   };
 
-  detalle.forEach((r) => {
-    // --- LÓGICA PARA DÉBITO (LDN) ---
-    if (tipo === 'LDN') {
-      // Sumamos la venta si ocurrió en el periodo
+  if (!detalle || detalle.length === 0) return [resultado];
+
+  // --- ESCENARIO DÉBITO (LDN): Resta Simple ---
+  if (tipo === 'LDN') {
+    detalle.forEach((r) => {
       if (r.ES_VENTA_PERIODO === 1) {
         resultado.saldo_total_ventas += Number(r.MONTO || 0);
       }
-      // Sumamos el abono si se liquidó en el periodo
       if (r.ES_ABONO_PERIODO === 1) {
         resultado.saldo_estimado += Number(r.MONTO || 0);
       }
-    }
+    });
+    // Para Débito mantenemos tu lógica de resta
+    resultado.saldo_por_cobrar = Math.max(
+      0,
+      resultado.saldo_total_ventas - resultado.saldo_estimado
+    );
+  } // --- ESCENARIO CRÉDITO (LCN): Deduplicación y Suma de Deuda ---
+  else {
+    const cuponesProcesadosVenta = new Set();
+    const cuponesProcesadosDeuda = new Set();
 
-    // --- LÓGICA PARA CRÉDITO (LCN) ---
-    else if (tipo === 'LCN') {
-      let contadorVentas = 0;
-      // Usamos ES_VENTA_PERIODO (que solo es 1 para la Cuota 1 en el rango)
-      // Esto evita que sumemos la misma venta 3, 6 o 12 veces si hay varias cuotas.
-      if (r.ES_VENTA_PERIODO === 1) {
-        resultado.saldo_total_ventas += Number(r.VENTA_TOTAL_ORIGINAL || 0);
-        contadorVentas++;
-        console.log(
-          `Venta detectada: ${r.CUPON} - Monto: ${r.VENTA_TOTAL_ORIGINAL} - Fecha: ${r.FECHA_VENTA} - cuota: ${r.CUOTA}`
-        );
-      }
-      //console.log(contadorVentas);
+    // Ordenamos: Cupón y luego Cuota descendente
+    const detalleOrdenado = [...detalle].sort((a, b) => {
+      if (a.CUPON < b.CUPON) return -1;
+      if (a.CUPON > b.CUPON) return 1;
+      return (Number(b.CUOTA) || 0) - (Number(a.CUOTA) || 0);
+    });
 
-      // Sumamos el abono de CUALQUIER cuota que haya caído en el periodo
+    detalleOrdenado.forEach((r) => {
+      const montoAbono = Number(r.MONTO || 0);
+      const deudaFila = Number(r.DEUDA_POR_PAGAR || 0);
+      const ventaOriginal = Number(r.VENTA_TOTAL_ORIGINAL || 0);
+
+      // Abonos: Se suman siempre
       if (r.ES_ABONO_PERIODO === 1) {
-        // Importante: r.MONTO es el valor de la cuota individual
-        resultado.saldo_estimado += Number(r.MONTO || 0);
+        resultado.saldo_estimado += montoAbono;
       }
-    }
-  });
 
-  // Cálculo de la Diferencia Neta
-  // Nota: En periodos largos, esto muestra el saldo pendiente de cobro.
-  // En periodos muy cortos con mucha recaudación antigua, podría dar 0.
-  resultado.saldo_por_cobrar = resultado.saldo_total_ventas - resultado.saldo_estimado;
-  // Si prefieres no mostrar saldos negativos (cuando recaudas más de lo que vendes),
-  // mantén el Math.max. Si quieres ver el superávit, quítalo.
-  if (resultado.saldo_por_cobrar < 0) {
-    resultado.saldo_por_cobrar = 0;
+      // Deuda: Solo la cuota más alta por cada cupón
+      if (!cuponesProcesadosDeuda.has(r.CUPON)) {
+        resultado.saldo_por_cobrar += deudaFila;
+        cuponesProcesadosDeuda.add(r.CUPON);
+      }
+
+      // Ventas: Solo una vez por cupón
+      if (r.ES_VENTA_PERIODO === 1 && !cuponesProcesadosVenta.has(r.CUPON)) {
+        resultado.saldo_total_ventas += ventaOriginal;
+        cuponesProcesadosVenta.add(r.CUPON);
+      }
+    });
   }
 
-  return [resultado]; // Retorna array para mantener compatibilidad con el controlador
+  return [resultado];
 }
 
 async function getDataCartola({ tipo, start, end }) {
@@ -101,9 +109,9 @@ async function getDataCartola({ tipo, start, end }) {
 
       // --- ESCENARIO 2: CRÉDITO (LCN) ---
       // Definimos variables base para LCN
-      const montoCuota = r.MONTO;
+      const montoCuotaAbonada = r.MONTO; // Puede ser 0 si es abono futuro
       const montoVentaOriginal = r.VENTA_TOTAL_ORIGINAL;
-      const esVentaPeriodo = r.ES_VENTA_PERIODO;
+      //const esVentaPeriodo = r.ES_VENTA_PERIODO;
 
       // Lógica de cuotas (considerando pagos full/contado como 1 cuota)
       const isLcnFullPayment = (r.RETE || '').trim() === '0000';
@@ -111,8 +119,11 @@ async function getDataCartola({ tipo, start, end }) {
       const totalCuotas = isLcnFullPayment ? 1 : r.TOTAL_CUOTAS;
 
       // Deuda por pagar visual: Si es la venta nueva (cuota 1), muestra lo que falta cobrar
-      let deudaRestante =
-        cuotaActual === 1 && esVentaPeriodo === 1 ? montoVentaOriginal - montoCuota : 0;
+      let deudaCalculada = 0;
+      if (totalCuotas > 0) {
+        // Estimación lógica: Total venta menos lo que ya se debería haber pagado a la fecha
+        deudaCalculada = montoVentaOriginal - cuotaActual * (montoVentaOriginal / totalCuotas);
+      }
       // Retornamos el objeto para LCN
       return {
         ID: r.ID,
@@ -120,13 +131,13 @@ async function getDataCartola({ tipo, start, end }) {
         CODIGO_AUTORIZACION: r.CODIGO_AUTORIZACION,
         FECHA_VENTA: r.FECHA_VENTA,
         RUT: r.RUT,
-        MONTO: montoCuota, // Lo que se abona hoy (valor cuota)
+        MONTO: montoCuotaAbonada, // Lo que se abona hoy (valor cuota)
         CUOTA: cuotaActual,
         TOTAL_CUOTAS: totalCuotas,
         CUOTAS_RESTANTES: totalCuotas - cuotaActual,
         MONTO_VENTA: montoVentaOriginal, // Se mantiene visible para el usuario siempre
-        DEUDA_PAGADA: r.ES_ABONO_PERIODO === 1 ? montoCuota : 0,
-        DEUDA_POR_PAGAR: Math.max(0, deudaRestante),
+        DEUDA_PAGADA: r.ES_ABONO_PERIODO === 1 ? montoCuotaAbonada : 0,
+        DEUDA_POR_PAGAR: Math.max(0, Math.round(deudaCalculada)),
         FECHA_ABONO: r.FECHA_ABONO,
         TIPO_DOCUMENTO: r.TIPO_DOCUMENTO,
         // Indicadores invisibles para la función calcularTotalesEnNode
@@ -484,45 +495,38 @@ async function getCartolaExcel({ tipo, start, end }, res) {
     });
 
     const rawRows = result.rows || [];
-
     let calculatedRows;
 
     if (tipo === 'LDN') {
       calculatedRows = rawRows;
     } else {
       calculatedRows = rawRows.map((r) => {
-        const monto = r.MONTO;
+        // --- NUEVA LÓGICA BASADA EN LA CORRECCIÓN PREVIA ---
+        const montoAbonadoHoy = r.MONTO; // Puede ser 0 si es abono futuro
+        const montoCuotaFisica = r.MONTO_CUOTA_REAL || (montoAbonadoHoy > 0 ? montoAbonadoHoy : 0);
+        const ventaTotalOriginal = r.VENTA_TOTAL_ORIGINAL;
+
         let cuota = r.CUOTA;
         let totalCuotas = r.TOTAL_CUOTAS;
-        let monto_total_venta = r.MONTO_TOTAL_VENTA;
-
-        const isLcnFullPayment = tipo === 'LCN' && (r.RETE || '').trim() === '0000'; //
+        const isLcnFullPayment = (r.RETE || '').trim() === '0000';
 
         if (isLcnFullPayment || !totalCuotas || totalCuotas === 0) {
           cuota = 1;
           totalCuotas = 1;
         }
 
-        let cuotasRestantes, deudaPagada, deudaPorPagar, montoVenta;
+        // 1. MONTO_VENTA: Usamos el valor real de la transacción, no el abono del mes
+        const montoVenta = ventaTotalOriginal || montoCuotaFisica * totalCuotas;
 
-        if (!totalCuotas || totalCuotas === 0) {
-          cuota = 1;
-          totalCuotas = 1;
-          cuotasRestantes = 0;
-          deudaPagada = monto;
-          montoVenta = monto_total_venta;
-          deudaPorPagar = 0;
-        } else {
-          cuotasRestantes = totalCuotas - cuota;
-          deudaPagada = cuota * monto;
-          montoVenta = monto_total_venta || monto * totalCuotas;
-          deudaPorPagar = montoVenta - deudaPagada;
-          if (deudaPorPagar < 0 && Math.abs(deudaPorPagar) <= 1) {
-            deudaPorPagar = 0;
-          } else if (deudaPorPagar > 0 && Math.abs(deudaPorPagar) <= 1) {
-            deudaPorPagar = 0;
-          }
-        }
+        // 2. DEUDA_PAGADA: Calculamos cuánto se ha pagado hasta esta cuota
+        // Usamos montoCuotaFisica para que no se arruine si el abono actual es futuro (0)
+        let deudaPagada = cuota * montoCuotaFisica;
+
+        // 3. DEUDA_POR_PAGAR: Diferencia real
+        let deudaPorPagar = Math.max(0, montoVenta - deudaPagada);
+
+        // Limpieza de decimales por redondeo
+        if (Math.abs(deudaPorPagar) <= 1) deudaPorPagar = 0;
 
         return {
           ID: r.ID,
@@ -530,10 +534,10 @@ async function getCartolaExcel({ tipo, start, end }, res) {
           CODIGO_AUTORIZACION: r.CODIGO_AUTORIZACION,
           FECHA_VENTA: r.FECHA_VENTA,
           RUT: r.RUT || 'No se encuentra rut',
-          MONTO: monto,
+          MONTO: montoAbonadoHoy, // Mantenemos el abono real del periodo para el reporte
           CUOTA: cuota,
           TOTAL_CUOTAS: totalCuotas,
-          CUOTAS_RESTANTES: cuotasRestantes,
+          CUOTAS_RESTANTES: Math.max(0, totalCuotas - cuota),
           MONTO_VENTA: montoVenta,
           DEUDA_PAGADA: deudaPagada,
           DEUDA_POR_PAGAR: deudaPorPagar,
@@ -555,27 +559,28 @@ async function getCartolaExcel({ tipo, start, end }, res) {
 
       if (tipo === 'LCN') {
         record.MONTO_VENTA = r.MONTO_VENTA;
-        record.MONTO_ABONADO = r.MONTO;
-        record.CUOTA = r.CUOTA ?? null;
+        record.MONTO_ABONADO = r.MONTO; // Este será 0 en ventas de fin de mes (Correcto)
+        record.CUOTA = r.CUOTA;
         record.DEUDA_PAGADA = r.DEUDA_PAGADA;
         record.DEUDA_POR_PAGAR = r.DEUDA_POR_PAGAR;
-        record.TOTAL_CUOTAS = r.TOTAL_CUOTAS ?? null;
-        record.CUOTAS_RESTANTES = r.CUOTAS_RESTANTES ?? null;
-      } else if (tipo === 'LDN') {
+        record.TOTAL_CUOTAS = r.TOTAL_CUOTAS;
+        record.CUOTAS_RESTANTES = r.CUOTAS_RESTANTES;
+      } else {
         record.MONTO_ABONADO = r.MONTO;
       }
       return record;
     });
+
     await exportToExcel(finalDataForExcel, res, `Cartola_${tipo}.xlsx`);
   } catch (err) {
     console.error('Error exportando Excel:', err);
-    res.status(500).json({ error: 'Error al exportar Excel' });
+    if (!res.headersSent) res.status(500).json({ error: 'Error al exportar Excel' });
   } finally {
     if (connection) {
       try {
         await connection.close();
       } catch (err) {
-        console.error('Error cerrando conexión:', err);
+        console.error(err);
       }
     }
   }

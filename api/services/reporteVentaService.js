@@ -1,4 +1,4 @@
-const { getConnection } = require('../config/utils');
+const { getConnection, exportToExcel } = require('../config/utils');
 const oracledb = require('oracledb');
 const { buildVentasQuery } = require('../config/queryBuilder');
 
@@ -43,6 +43,25 @@ async function obtenerVentas({ tipo, start, end }) {
   }
 }
 
+async function getVentasExcel({ tipo, start, end }, res) {
+  let connection;
+
+  try {
+    connection = await getConnection();
+
+    const { sql, binds } = buildVentasQuery({ tipo, start, end });
+    const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
+    const result = await connection.execute(sql, binds, options);
+
+    const filas = result.rows;
+
+    await exportToExcel(filas, res, `Reporte_Ventas_${tipo}.xlsx`);
+  } catch (err) {
+    res.status(500).json({ mensaje: 'Error al generar Excel', err });
+  }
+}
+
 module.exports = {
   obtenerVentas,
+  getVentasExcel,
 };
