@@ -18,7 +18,6 @@ function calcularTotalesEnNode(detalle, tipo) {
 
   if (!detalle || detalle.length === 0) return [resultado];
 
-  // --- ESCENARIO DÉBITO (LDN): Resta Simple ---
   if (tipo === 'LDN') {
     detalle.forEach((r) => {
       if (r.ES_VENTA_PERIODO === 1) {
@@ -28,17 +27,14 @@ function calcularTotalesEnNode(detalle, tipo) {
         resultado.saldo_estimado += Number(r.MONTO || 0);
       }
     });
-    // Para Débito mantenemos tu lógica de resta
     resultado.saldo_por_cobrar = Math.max(
       0,
       resultado.saldo_total_ventas - resultado.saldo_estimado
     );
-  } // --- ESCENARIO CRÉDITO (LCN): Deduplicación y Suma de Deuda ---
-  else {
+  } else {
     const cuponesProcesadosVenta = new Set();
     const cuponesProcesadosDeuda = new Set();
 
-    // Ordenamos: Cupón y luego Cuota descendente
     const detalleOrdenado = [...detalle].sort((a, b) => {
       if (a.CUPON < b.CUPON) return -1;
       if (a.CUPON > b.CUPON) return 1;
@@ -50,18 +46,13 @@ function calcularTotalesEnNode(detalle, tipo) {
       const deudaFila = Number(r.DEUDA_POR_PAGAR || 0);
       const ventaOriginal = Number(r.VENTA_TOTAL_ORIGINAL || 0);
 
-      // Abonos: Se suman siempre
       if (r.ES_ABONO_PERIODO === 1) {
         resultado.saldo_estimado += montoAbono;
       }
-
-      // Deuda: Solo la cuota más alta por cada cupón
       if (!cuponesProcesadosDeuda.has(r.CUPON)) {
         resultado.saldo_por_cobrar += deudaFila;
         cuponesProcesadosDeuda.add(r.CUPON);
       }
-
-      // Ventas: Solo una vez por cupón
       if (r.ES_VENTA_PERIODO === 1 && !cuponesProcesadosVenta.has(r.CUPON)) {
         resultado.saldo_total_ventas += ventaOriginal;
         cuponesProcesadosVenta.add(r.CUPON);
@@ -76,14 +67,29 @@ async function getDataCartola({ tipo, start, end }) {
   const connection = await getConnection();
 
   try {
-    const { sql, binds } = buildCartolaQuery({ tipo, start, end });
-    const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
-    const res = await connection.execute(sql, binds, options);
+    const result = await connection.execute(
+      `BEGIN PRC_GET_CARTOLA_DETALLE(:tipo, :start, :end, :recordset); END;`,
+      {
+        tipo: tipo,
+        start: start,
+        end: end,
+        recordset: { type: oracledb.CURSOR, dir: oracledb.BIND_OUT },
+      },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT }
+    );
 
-    const rows = res.rows || [];
+    const resultSet = result.outBinds.recordset;
+    const rows = [];
+    let r;
 
+    // 2. EXTRAER FILAS DEL CURSOR
+    while ((r = await resultSet.getRow())) {
+      rows.push(r);
+    }
+    await resultSet.close();
+
+    // 3. EL MISMO MAPEÓ QUE YA TENÍAS (Para no romper el Frontend)
     const filas = rows.map((r) => {
-      // --- ESCENARIO 1: DÉBITO (LDN) ---
       if (tipo === 'LDN') {
         return {
           ID: r.ID,
@@ -97,9 +103,7 @@ async function getDataCartola({ tipo, start, end }) {
           CUOTAS_RESTANTES: 0,
           MONTO_VENTA: r.MONTO,
           DEUDA_PAGADA: r.ES_ABONO_PERIODO === 1 ? r.MONTO : 0,
-          // Muestra el monto pendiente si la fecha de abono es futura al periodo
-          DEUDA_POR_PAGAR:
-            r.MONTO_PENDIENTE !== undefined ? r.MONTO_PENDIENTE : r.monto_pendiente || 0,
+          DEUDA_POR_PAGAR: r.MONTO_PENDIENTE || 0,
           FECHA_ABONO: r.FECHA_ABONO,
           TIPO_DOCUMENTO: r.TIPO_DOCUMENTO,
           ES_VENTA_PERIODO: r.ES_VENTA_PERIODO,
@@ -108,53 +112,51 @@ async function getDataCartola({ tipo, start, end }) {
       }
 
       // --- ESCENARIO 2: CRÉDITO (LCN) ---
-      // Definimos variables base para LCN
-      const montoCuotaAbonada = r.MONTO; // Puede ser 0 si es abono futuro
+      const montoCuotaAbonada = r.MONTO;
       const montoVentaOriginal = r.VENTA_TOTAL_ORIGINAL;
-      //const esVentaPeriodo = r.ES_VENTA_PERIODO;
 
-      // Lógica de cuotas (considerando pagos full/contado como 1 cuota)
       const isLcnFullPayment = (r.RETE || '').trim() === '0000';
       const cuotaActual = isLcnFullPayment ? 1 : r.CUOTA;
       const totalCuotas = isLcnFullPayment ? 1 : r.TOTAL_CUOTAS;
 
-      // Deuda por pagar visual: Si es la venta nueva (cuota 1), muestra lo que falta cobrar
       let deudaCalculada = 0;
       if (totalCuotas > 0) {
-        // Estimación lógica: Total venta menos lo que ya se debería haber pagado a la fecha
         deudaCalculada = montoVentaOriginal - cuotaActual * (montoVentaOriginal / totalCuotas);
       }
-      // Retornamos el objeto para LCN
+
       return {
         ID: r.ID,
         CUPON: r.CUPON,
         CODIGO_AUTORIZACION: r.CODIGO_AUTORIZACION,
         FECHA_VENTA: r.FECHA_VENTA,
         RUT: r.RUT,
-        MONTO: montoCuotaAbonada, // Lo que se abona hoy (valor cuota)
+        MONTO: montoCuotaAbonada,
         CUOTA: cuotaActual,
         TOTAL_CUOTAS: totalCuotas,
         CUOTAS_RESTANTES: totalCuotas - cuotaActual,
-        MONTO_VENTA: montoVentaOriginal, // Se mantiene visible para el usuario siempre
+        MONTO_VENTA: montoVentaOriginal,
         DEUDA_PAGADA: r.ES_ABONO_PERIODO === 1 ? montoCuotaAbonada : 0,
         DEUDA_POR_PAGAR: Math.max(0, Math.round(deudaCalculada)),
         FECHA_ABONO: r.FECHA_ABONO,
         TIPO_DOCUMENTO: r.TIPO_DOCUMENTO,
-        // Indicadores invisibles para la función calcularTotalesEnNode
         ES_VENTA_PERIODO: r.ES_VENTA_PERIODO,
         ES_ABONO_PERIODO: r.ES_ABONO_PERIODO,
-        VENTA_TOTAL_ORIGINAL: montoVentaOriginal,
+        VENTA_TOTAL_ORIGINAL: Number(r.VENTA_TOTAL_ORIGINAL || 0), // <--- Vital
       };
     });
 
     return filas;
   } catch (error) {
-    console.error('Error en getDataCartola:', error);
+    console.error('Error en getDataCartola (Procedure):', error);
     throw error;
   } finally {
-    try {
-      if (connection) await connection.close();
-    } catch (_) {}
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (err) {
+        console.error(err);
+      }
+    }
   }
 }
 

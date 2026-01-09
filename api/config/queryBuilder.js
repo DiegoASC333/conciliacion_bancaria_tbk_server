@@ -205,8 +205,6 @@ function buildCartolaQuery({ tipo, start, end }) {
       END
     `;
 
-    //const cutOffDate = '01102025'; // 1 de Octubre de 2025
-
     joinWebpay = `LEFT JOIN (
          SELECT id_sesion, orden_compra
          FROM vec_cob02.webpay_trasaccion

@@ -17,49 +17,34 @@ async function getLiquidacion({ tipo, startLCN, startLDN }) {
 
 async function getLiquidacionTotales({ tipo, startLCN, startLDN }) {
   const connection = await getConnection();
-
-  const tipoUpper = (tipo || '').toUpperCase();
-
-  let where = '';
-  let binds = {};
-
-  if (tipoUpper === 'LCN') {
-    where = "TIPO_TRANSACCION = 'LCN' AND liq_fpago = :fecha";
-    binds.fecha = startLCN;
-  } else if (tipoUpper === 'LDN') {
-    where = "TIPO_TRANSACCION = 'LDN' AND liq_fedi = :fecha";
-    binds.fecha = startLDN;
-  }
-
-  let comercioExpr;
-  if (tipoUpper === 'LCN') {
-    comercioExpr = `CASE WHEN l.liq_cprin != 99999999 THEN TRIM(l.liq_cprin) ELSE TRIM(l.liq_numc) END`;
-  } else {
-    comercioExpr = `TRIM(l.liq_numc)`;
-  }
-
-  const sql = `
-    SELECT
-      ${comercioExpr}                           AS CODIGO_COMERCIO,
-      c.NOMBRE_COMERCIO AS NOMBRE_COMERCIO,
-      c.CUENTA_CORRIENTE AS CUENTA_CORRIENTE,
-      c.BANCO AS  BANCO,
-      c.CUENTA_CONTABLE AS CUENTA_CONTABLE,
-      c.DESCRIPCION AS DESCRIPCION,
-      SUM(l.liq_monto / 100)                     AS TOTAL_MONTO
-      FROM liquidacion_file_tbk l
-      LEFT JOIN vec_cob04.codigo_comerico c
-    ON c.codigo_comerico = ${comercioExpr}
-    WHERE ${where}
-    AND ${comercioExpr} NOT IN ('28208820', '48211418', '41246590', '41246593', '41246594')
-    GROUP BY ${comercioExpr}, c.NOMBRE_COMERCIO, c.CUENTA_CORRIENTE, c.BANCO, c.CUENTA_CONTABLE, c.DESCRIPCION
-    ORDER BY TOTAL_MONTO DESC
-  `;
-
   try {
-    const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
-    //const binds = { tipo: tipoUpper, startLCN, startLDN };
-    const res = await connection.execute(sql, binds, options);
+    // Obtenemos el SQL base del detalle
+    const { sql: sqlBase, binds } = buildLiquidacionQuery({ tipo, startLCN, startLDN });
+
+    const sql = `
+      SELECT  
+        res.CODIGO_COMERCIO,
+        c.NOMBRE_COMERCIO,
+        c.CUENTA_CORRIENTE,
+        c.BANCO,
+        c.CUENTA_CONTABLE,
+        c.DESCRIPCION,
+        SUM(res.TOTAL_ABONADO) AS TOTAL_MONTO
+      FROM (
+        ${sqlBase}
+      ) res
+      LEFT JOIN vec_cob04.codigo_comerico c ON TRIM(c.codigo_comerico) = TRIM(res.CODIGO_COMERCIO)
+      GROUP BY 
+        res.CODIGO_COMERCIO, 
+        c.NOMBRE_COMERCIO, 
+        c.CUENTA_CORRIENTE, 
+        c.BANCO, 
+        c.CUENTA_CONTABLE, 
+        c.DESCRIPCION
+      ORDER BY TOTAL_MONTO DESC
+    `;
+
+    const res = await connection.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
     return res.rows || [];
   } catch (error) {
     console.error('Error al obtener totales de liquidación:', error);
@@ -74,55 +59,19 @@ async function getLiquidacionTotales({ tipo, startLCN, startLDN }) {
 async function getLiquidacionTotalesPorDocumento({ tipo, startLCN, startLDN }) {
   const connection = await getConnection();
   try {
-    const tipoUpper = (tipo || '').toUpperCase();
+    // LLAMAMOS a tu función original para obtener el SQL base
+    const { sql: sqlBase, binds } = buildLiquidacionQuery({ tipo, startLCN, startLDN });
 
-    let where = '';
-    let binds = {};
-
-    if (tipoUpper === 'LCN') {
-      where = "TIPO_TRANSACCION = 'LCN' AND liq_fpago = :fecha";
-      binds.fecha = startLCN;
-    } else if (tipoUpper === 'LDN') {
-      where = "TIPO_TRANSACCION = 'LDN' AND liq_fedi = :fecha";
-      binds.fecha = startLDN;
-    }
-
-    // Lógica para el JOIN y obtener el tipo de documento
-    const isValid = (col) => `REGEXP_LIKE(TRIM(l.${col}), '^[0-9]*[1-9][0-9]*$')`;
-    let joinClause = '';
-
-    if (tipoUpper === 'LCN') {
-      joinClause = `LEFT JOIN CCN_TBK_HISTORICO h ON 
-      ((${isValid('liq_orpedi')} AND 
-      LTRIM(TRIM(l.liq_orpedi), '0') = LTRIM(TRIM(h.DKTT_DT_NUMERO_UNICO), '0')) 
-      OR (NOT ${isValid('liq_orpedi')} AND TRIM(l.liq_codaut) = h.DKTT_DT_APPRV_CDE))`; //AND TRUNC(l.liq_monto/100) = h.DKTT_DT_AMT_1 Se quita de momento para incongruencia entre monto abonado y total de venta
-    } else if (tipoUpper === 'LDN') {
-      const ldn_l_dateFormat = 'DDMMRR';
-      const ldn_h_dateFormat = 'RRMMDD';
-
-      joinClause = `LEFT JOIN CDN_TBK_HISTORICO h ON ((${isValid('liq_nro_unico')} AND LTRIM(TRIM(l.liq_nro_unico), '0') = LTRIM(TRIM(h.DSK_ID_NRO_UNICO), '0')) 
-      OR (NOT ${isValid('liq_nro_unico')} AND TRIM(l.liq_appr) = h.DSK_APPVR_CDE))
-        AND REGEXP_LIKE(TO_CHAR(l.liq_fcom), '^[0-9]{5,6}$')
-        AND REGEXP_LIKE(TO_CHAR(h.DSK_TRAN_DAT), '^[0-9]{5,6}$')
-        AND TO_DATE(LPAD(TO_CHAR(l.liq_fcom), 6, '0'), '${ldn_l_dateFormat}') = TO_DATE(LPAD(TO_CHAR(h.DSK_TRAN_DAT), 6, '0'), '${ldn_h_dateFormat}')
-        AND l.liq_monto = h.DSK_AMT_1 `; //Se agrega monto para evitar problemas con cupones repetidos
-    }
-
-    const tipoDocumentoExpr = `NVL(h.tipo_documento, 'Z5')`;
-    const comercioExpr =
-      tipoUpper === 'LCN'
-        ? `CASE WHEN l.liq_cprin != 99999999 THEN l.liq_cprin ELSE l.liq_numc END`
-        : `l.liq_numc`;
-
+    // Envolvemos el SQL base en una subconsulta para sumar
+    // Usamos TOTAL_ABONADO porque ya viene con el TRUNC aplicado en el SQL base
     const sql = `
-      SELECT DISTINCT
-        ${tipoDocumentoExpr}          AS TIPO_DOCUMENTO,
-        SUM(l.liq_monto / 100)        AS TOTAL_MONTO
-      FROM liquidacion_file_tbk l
-      ${joinClause}
-      WHERE ${where}
-      AND ${comercioExpr} NOT IN ('28208820', '48211418', '41246590', '41246593', '41246594')
-      GROUP BY ${tipoDocumentoExpr}
+      SELECT 
+        TIPO_DOCUMENTO, 
+        SUM(TOTAL_ABONADO) AS TOTAL_MONTO
+      FROM (
+        ${sqlBase}
+      )
+      GROUP BY TIPO_DOCUMENTO
       ORDER BY TOTAL_MONTO DESC
     `;
 
