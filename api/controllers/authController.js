@@ -20,9 +20,9 @@ const login = async (req, res) => {
     }
 
     const payload = {
-      rut: user.RUT,
-      rol: user.ROL,
-      perfil: user.PERFIL,
+      rut: user.rut,
+      rol: user.rol,
+      perfil: user.perfil,
     };
 
     const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '8h' });
@@ -31,10 +31,11 @@ const login = async (req, res) => {
       message: 'Login exitoso',
       token: token,
       usuario: {
-        rut: user.RUT,
-        rol: user.ROL,
-        perfil: user.PERFIL,
-        activo: user.ACTIVO,
+        rut: user.rut,
+        rol: user.rol,
+        perfil: user.perfil,
+        activo: user.activo,
+        nombre: user.nombre,
       },
     });
   } catch (error) {
@@ -50,10 +51,8 @@ const loginBack = async (req, res) => {
     return res.status(400).json({ message: 'El RUT es requerido.' });
   }
 
-  const rutNumber = Number(rut);
-
   try {
-    const user = await authService.encontrarUsuario({ rut: rutNumber });
+    const user = await authService.encontrarUsuario({ rut });
 
     if (!user) {
       return res.status(404).json({ message: 'Usuario no encontrado en el sistema.' });
@@ -71,10 +70,11 @@ const loginBack = async (req, res) => {
       message: 'Login exitoso',
       token: token,
       usuario: {
-        rut: user.RUT,
-        rol: user.ROL,
-        perfil: user.PERFIL,
-        activo: user.ACTIVO,
+        rut: user.rut,
+        rol: user.rol,
+        perfil: user.perfil,
+        activo: user.activo,
+        nombre: user.nombre,
       },
     });
   } catch (error) {

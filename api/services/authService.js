@@ -3,10 +3,18 @@ const oracledb = require('oracledb');
 
 async function encontrarUsuario({ rut }) {
   let connection;
-  const sql = `
-            SELECT RUT, CLAVE, ROL, PERFIL, ACTIVO 
-            FROM USUARIOS 
-            WHERE RUT = :rut`;
+  const sql = `SELECT 
+        A.RUT AS "rut", 
+        B.NOMBRE_PILA || ' ' || B.APELLIDO_PATERNO || ' ' || B.APELLIDO_MATERNO AS "nombre", 
+        A.ROL AS "rol", 
+        A.PERFIL AS "perfil", 
+        A.ACTIVO AS "activo" 
+    FROM 
+        USUARIOS A
+    JOIN 
+        utsap001.rem_ficha_sap2 B ON A.RUT = B.ID_PERSONA
+    WHERE 
+        A.RUT = :rut`;
 
   try {
     connection = await getConnection();

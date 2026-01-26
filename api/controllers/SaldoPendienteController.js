@@ -1,4 +1,7 @@
-const { getSaldoPendienteService } = require('../services/SaldoPendienteService');
+const {
+  getSaldoPendienteService,
+  getSaldoPendienteServiceExcel,
+} = require('../services/SaldoPendienteService');
 
 const SaldoPendienteController = async (req, res) => {
   try {
@@ -35,4 +38,27 @@ const SaldoPendienteController = async (req, res) => {
   }
 };
 
-module.exports = { SaldoPendienteController };
+async function getSaldoPendienteXls(req, res) {
+  try {
+    const { fecha, tipo } = req.body;
+
+    if (!fecha || !/^\d{8}$/.test(fecha)) {
+      return res.status(400).json({
+        success: false,
+        mensaje: 'Se requiere una fecha válida (DDMMYYYY) en el cuerpo de la solicitud.',
+      });
+    }
+    await getSaldoPendienteServiceExcel({ fecha, tipo }, res);
+  } catch (error) {
+    console.error('Error al exportar el saldo pendiente a Excel:', error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        mensaje: 'Error interno del servidor al exportar el saldo pendiente a Excel',
+        error: error.message,
+      });
+    }
+  }
+}
+
+module.exports = { SaldoPendienteController, getSaldoPendienteXls };

@@ -16,6 +16,7 @@ const {
   getStatusCuadratura,
   listarporTipo,
   exportarReporteCompletoExcel,
+  getTotalesInformativosController,
 } = require('./controllers/statusCuadraturaController.js');
 const { reprocesoCuponController } = require('./controllers/reprocesoCuponController.js');
 const {
@@ -41,7 +42,10 @@ const {
   getReporteTransacciones,
   getReportePorDia,
 } = require('./controllers/contabilidadController.js');
-const { SaldoPendienteController } = require('./controllers/SaldoPendienteController.js');
+const {
+  SaldoPendienteController,
+  getSaldoPendienteXls,
+} = require('./controllers/SaldoPendienteController.js');
 const { getVentasController, getReportexls } = require('./controllers/reporteVentaController.js');
 
 //Rutas
@@ -56,6 +60,7 @@ router.post('/procesar-dat-gz', procesarArchivosRemotos); // procesar archivos r
 router.post('/procesar-archivos-remotos-automatico', procesarArchivosRemotosAutomatico); //procesar archivos remotos automáticos
 router.get('/status-cuadratura/:fecha/:perfil', getStatusCuadratura); // obtener estado de cuadratura diario
 router.get('/status-cuadratura/:fecha/:tipo/:tipoTransaccion/:perfil', listarporTipo); //listar por tipo los registros
+router.get('/totales-informativos/:fecha', getTotalesInformativosController); //obtener totales para SD y FICA
 router.post('/reproceso-cupon', reprocesoCuponController); // reprocesar cupon
 router.post('/auditoria-dafe', postEnviarTesoreria); // auditoría y envío a tesorería
 router.post('/liquidacion', getLiquidacionController); // obtener liquidacion por tipo
@@ -73,6 +78,7 @@ router.post('/descargar-excel', getReporteTransacciones); //totales para excel c
 router.post('/descargar-excel-dia', getReportePorDia);
 router.post('/totales-documento-cartola', getTotalesPorDocumento);
 router.post('/saldo-pendiente', SaldoPendienteController); // saldo pendiente
+router.post('/saldo-pendiente-excel', getSaldoPendienteXls); // excel para saldo pendiente
 router.post('/reporte-ventas', getVentasController); // reporte de ventas por transacción tipo
 router.post('/reporte-ventas-excel', getReportexls); // excel reporte de ventas
 

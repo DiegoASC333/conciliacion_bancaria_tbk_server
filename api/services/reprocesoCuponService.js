@@ -3,7 +3,6 @@ const oracledb = require('oracledb');
 
 async function ejecutarReprocesoCupon(cupon, id) {
   const sql = `BEGIN REPROCESA_CUPON(:pCupon, :pId, :pResultado ); END;`;
-
   const binds = {
     pCupon: { val: cupon, dir: oracledb.BIND_IN, type: oracledb.NUMBER },
     pId: { val: id, dir: oracledb.BIND_IN, type: oracledb.NUMBER },
@@ -14,12 +13,16 @@ async function ejecutarReprocesoCupon(cupon, id) {
   try {
     conn = await getConnection();
     const r = await conn.execute(sql, binds);
-    await conn.commit();
 
-    const resultadoOracle = r.outBinds.pResultado;
-    const estadoJson = JSON.parse(resultadoOracle);
+    const resultadoOracle = JSON.parse(r.outBinds.pResultado);
 
-    return { ok: true, estado: estadoJson };
+    if (resultadoOracle.success === true) {
+      await conn.commit();
+      return { ok: true, estado: resultadoOracle };
+    } else {
+      await conn.rollback();
+      return { ok: false, estado: resultadoOracle };
+    }
   } catch (error) {
     if (conn) await conn.rollback();
     throw error;

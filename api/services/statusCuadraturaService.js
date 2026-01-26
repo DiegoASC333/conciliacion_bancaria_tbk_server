@@ -400,8 +400,79 @@ async function generarExcelReporteCompleto(params, res) {
   }
 }
 
+async function getTotalesInformativos({ fecha }) {
+  const connection = await getConnection();
+  const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
+
+  // Mantenemos la lógica de negocio idéntica para que los números cuadren
+  const expresionPerfilEfectivo = `
+    CASE
+        WHEN cfg.centro_cc IS NOT NULL THEN 'SD'
+        WHEN sap.pade_tipo_documento = 'FA' THEN 'SD'
+        WHEN JSON_VALUE(pc.respuesta, '$.data[0].CARRERA' NULL ON ERROR) = 'SD' THEN 'SD'
+        ELSE 'FICA'
+    END`;
+
+  const sql = `
+    SELECT 
+      ${expresionPerfilEfectivo} AS PERFIL,
+      COUNT(*) AS CANTIDAD,
+      SUM(TRUNC(c.DKTT_DT_AMT_1 / 100)) AS MONTO_TOTAL,
+      SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) IN ('ENCONTRADO', 'PROCESADO') THEN 1 ELSE 0 END) AS APROBADOS_CANTIDAD,
+      SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) IN ('ENCONTRADO', 'PROCESADO') THEN TRUNC(c.DKTT_DT_AMT_1 / 100) ELSE 0 END) AS APROBADOS_MONTO
+    FROM CUADRATURA_FILE_TBK c
+    LEFT JOIN (
+        SELECT id_cuadratura, respuesta, cupon_limpio,
+               ROW_NUMBER() OVER(PARTITION BY id_cuadratura ORDER BY CASE estado WHEN 'PROCESADO' THEN 1 WHEN 'ENCONTRADO' THEN 2 ELSE 3 END, id DESC) as rn
+        FROM proceso_cupon
+    ) pc ON c.id = pc.id_cuadratura AND pc.rn = 1
+    LEFT JOIN centro_cc cfg ON c.centro_costo = cfg.centro_cc
+    LEFT JOIN (
+      SELECT pa_nro_operacion, MIN(pade_tipo_documento) AS pade_tipo_documento
+      FROM pop_pagos_detalle_temp_sap
+      GROUP BY pa_nro_operacion
+    ) sap ON TO_CHAR(sap.pa_nro_operacion) = pc.cupon_limpio
+    WHERE c.DKTT_DT_TRAN_DAT = :fecha
+      AND TRIM(c.DKTT_DT_ID_RETAILER) NOT IN ('597048211418', '28208820', '48211418', '597028208820')
+    GROUP BY ${expresionPerfilEfectivo}
+  `;
+
+  try {
+    const res = await connection.execute(sql, { fecha }, options);
+
+    // Inicializamos el objeto de respuesta para asegurar que siempre vengan ambos perfiles
+    const respuesta = {
+      fecha,
+      sd: { total: 0, monto: 0, aprobados: 0, monto_aprobados: 0 },
+      fica: { total: 0, monto: 0, aprobados: 0, monto_aprobados: 0 },
+      global: { total: 0, monto: 0 },
+    };
+
+    res.rows.forEach((row) => {
+      const p = row.PERFIL.toLowerCase();
+      respuesta[p] = {
+        total: Number(row.CANTIDAD || 0),
+        monto: Number(row.MONTO_TOTAL || 0),
+        aprobados: Number(row.APROBADOS_CANTIDAD || 0),
+        monto_aprobados: Number(row.APROBADOS_MONTO || 0),
+      };
+      // Acumulamos el gran total
+      respuesta.global.total += Number(row.CANTIDAD || 0);
+      respuesta.global.monto += Number(row.MONTO_TOTAL || 0);
+    });
+
+    return respuesta;
+  } catch (error) {
+    console.error('Error en getTotalesInformativos:', error);
+    throw error;
+  } finally {
+    if (connection) await connection.close();
+  }
+}
+
 module.exports = {
   getStatusDiarioCuadratura,
   listarPorTipo,
   generarExcelReporteCompleto,
+  getTotalesInformativos,
 };

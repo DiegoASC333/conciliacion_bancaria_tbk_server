@@ -1,4 +1,4 @@
-const { getConnection } = require('../config/utils');
+const { getConnection, exportToExcel } = require('../config/utils');
 const oracledb = require('oracledb');
 
 function buildSaldoPendienteQuery({ fecha, tipo }) {
@@ -20,8 +20,6 @@ function buildSaldoPendienteQuery({ fecha, tipo }) {
         THEN TO_CHAR(TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 8, '0'), 'DDMMYYYY'), 'DD/MM/YYYY')
         ELSE NULL
       END`;
-
-    const cutOffDate = '01102025';
 
     const joinWebpay = `LEFT JOIN (
      SELECT id_sesion, orden_compra
@@ -50,8 +48,8 @@ function buildSaldoPendienteQuery({ fecha, tipo }) {
       ${fechaVenta} AS fecha_venta,
       NVL(ROUND(h.DKTT_DT_AMT_1/100), (liq.liq_monto / 100) * liq.liq_ntc) AS monto_total_venta,
       ROUND(liq.liq_monto/100) AS monto,
-      liq.liq_cuotas AS cuota,          
-      liq.liq_ntc AS total_cuotas,
+      liq.liq_cuotas AS CUOTA,          
+      liq.liq_ntc AS TOTAL_CUOTAS,
       TRIM(liq.liq_rete) AS RETE,       
       ${fechaAbono} AS fecha_abono,
       COALESCE(h.TIPO_DOCUMENTO, REGEXP_SUBSTR(JSON_VALUE(pc.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+'), 'Z5') AS TIPO_DOCUMENTO
@@ -62,6 +60,7 @@ function buildSaldoPendienteQuery({ fecha, tipo }) {
     WHERE REGEXP_LIKE(TRIM(liq.liq_orpedi), '^\\d+$')
       AND REGEXP_LIKE(TRIM(liq.liq_fcom), '^[0-9]{8}$') 
       AND TO_DATE(TRIM(liq.liq_fcom), 'DDMMYYYY') <= TO_DATE(:fecha_fin, 'DDMMYYYY')
+      AND (liq.liq_fpago IS NULL OR TO_DATE(TRIM(liq.liq_fpago), 'DDMMYYYY') > TO_DATE(:fecha_fin, 'DDMMYYYY'))
     ORDER BY liq.liq_fproc, liq.liq_orpedi, liq.liq_cuotas`;
   } else if (tipoUpper === 'LDN') {
     const cuponExpr = `CASE WHEN ${isValid('liq.liq_nro_unico')} THEN LTRIM(TRIM(liq.liq_nro_unico), '0') ELSE LTRIM(TRIM(liq.liq_appr), '0') END`;
@@ -110,9 +109,6 @@ function buildSaldoPendienteQuery({ fecha, tipo }) {
         ${fechaVenta} AS fecha_venta,
         TRUNC(liq.liq_amt_1/100) AS monto_total_venta,
         TRUNC(liq.liq_amt_1/100) AS monto,
-        1 AS cuota,
-        1 AS total_cuotas,
-        '0000' AS RETE, -- En débito no aplica cuotas usualmente
         ${fechaAbono} AS fecha_abono,
         COALESCE(h.TIPO_DOCUMENTO, REGEXP_SUBSTR(JSON_VALUE(pc.respuesta, '$.data[0].TEXTO_EXPLICATIVO' NULL ON ERROR), '[^|]+'), 'Z5') AS TIPO_DOCUMENTO,
         TRIM(liq.liq_fedi) as raw_fecha_abono
@@ -123,6 +119,7 @@ function buildSaldoPendienteQuery({ fecha, tipo }) {
       WHERE REGEXP_LIKE(TRIM(liq.liq_nro_unico), '^\\d+$')
       AND REGEXP_LIKE(TO_CHAR(liq.liq_fcom), '^[0-9]{5,6}$')
       AND TO_DATE(LPAD(TO_CHAR(liq.liq_fcom), 6, '0'), 'DDMMRR') <= TO_DATE(:fecha_fin, 'DDMMYYYY')
+      AND (liq.liq_fedi IS NULL OR TO_DATE(TRIM(liq.liq_fedi), 'DD/MM/RR') > TO_DATE(:fecha_fin, 'DDMMYYYY'))
       ORDER BY liq.liq_fpro , liq.liq_nro_unico`;
   }
 
@@ -142,42 +139,58 @@ async function getSaldoPendienteService({ fecha, tipo }) {
     const dia = parseInt(fecha.substring(0, 2));
     const mes = parseInt(fecha.substring(2, 4)) - 1; // Meses en JS son 0-11
     const anio = parseInt(fecha.substring(4, 8));
-    const fechaCorte = new Date(anio, mes, dia);
+    const fechaCorte = new Date(anio, mes, dia, 23, 59, 59, 999);
 
     const filasProcesadas = (res.rows || []).map((r) => {
       const montoCuota = r.MONTO;
-      let cuota = r.CUOTA;
-      let totalCuotas = r.TOTAL_CUOTAS;
+      const cuota = parseInt(r.CUOTA) || 1;
+      const totalCuotas = parseInt(r.TOTAL_CUOTAS) || 1;
       const montoTotalVenta = r.MONTO_TOTAL_VENTA;
 
-      let deudaPagada = 0;
       let deudaPorPagar = 0;
 
       if (tipoUpper === 'LDN') {
-        let estaPagadoAlCorte = false;
+        let esPendiente = false;
 
-        if (r.RAW_FECHA_ABONO) {
-          // RAW_FECHA_ABONO viene de la SQL como 'DD/MM/YYYY' o 'DD/MM/RR'
+        if (!r.RAW_FECHA_ABONO) {
+          // Caso A: No hay fecha de abono aún, es deuda pendiente
+          esPendiente = true;
+        } else {
+          // Caso B: Hay fecha de abono, comparamos con el corte
           const partes = r.RAW_FECHA_ABONO.split('/');
-          if (partes.length === 3) {
-            let anioAbono = parseInt(partes[2]);
-            if (anioAbono < 100) anioAbono += 2000; // Ajuste para RR (dos dígitos)
+          let dA = parseInt(partes[0]),
+            mA = parseInt(partes[1]) - 1,
+            aA = parseInt(partes[2]);
+          if (aA < 100) aA += 2000;
 
-            const fechaAbono = new Date(anioAbono, parseInt(partes[1]) - 1, parseInt(partes[0]));
+          const fechaAbono = new Date(aA, mA, dA, 0, 0, 0, 0);
 
-            if (fechaAbono <= fechaCorte) {
-              estaPagadoAlCorte = true;
-            }
+          // Si el abono ocurrió DESPUÉS de la fecha consultada, es saldo pendiente a esa fecha
+          if (fechaAbono.getTime() > fechaCorte.getTime()) {
+            esPendiente = true;
           }
         }
 
-        deudaPagada = estaPagadoAlCorte ? montoTotalVenta : 0;
-        deudaPorPagar = estaPagadoAlCorte ? 0 : montoTotalVenta;
+        deudaPorPagar = esPendiente ? montoTotalVenta : 0;
       } else {
-        deudaPagada = cuota * montoCuota;
-        deudaPorPagar = montoTotalVenta - deudaPagada;
+        // LCN (Crédito) - Lógica de Flujo de Caja por Cuota
+        let esCuotaPendiente = false;
 
-        if (Math.abs(deudaPorPagar) <= 5) deudaPorPagar = 0;
+        if (!r.FECHA_ABONO) {
+          esCuotaPendiente = true;
+        } else {
+          const partes = r.FECHA_ABONO.split('/');
+          const dA = parseInt(partes[0]),
+            mA = parseInt(partes[1]) - 1,
+            aA = parseInt(partes[2]);
+          const fechaAbonoCuota = new Date(aA, mA, dA, 0, 0, 0, 0);
+
+          if (fechaAbonoCuota.getTime() > fechaCorte.getTime()) {
+            esCuotaPendiente = true;
+          }
+        }
+        // Si la cuota específica está fuera de fecha, la deuda es el monto de ESA cuota
+        deudaPorPagar = esCuotaPendiente ? montoCuota : 0;
       }
 
       return {
@@ -207,6 +220,81 @@ async function getSaldoPendienteService({ fecha, tipo }) {
   }
 }
 
+async function getSaldoPendienteServiceExcel({ fecha, tipo }, res) {
+  let connection;
+  const tipoUpper = (tipo || '').toUpperCase();
+
+  try {
+    connection = await getConnection();
+    const { sql, binds } = buildSaldoPendienteQuery({ fecha, tipo: tipoUpper });
+
+    const result = await connection.execute(sql, binds, {
+      outFormat: oracledb.OUT_FORMAT_OBJECT,
+    });
+
+    const dia = parseInt(fecha.substring(0, 2));
+    const mes = parseInt(fecha.substring(2, 4)) - 1;
+    const anio = parseInt(fecha.substring(4, 8));
+    const fechaCorte = new Date(anio, mes, dia, 23, 59, 59, 999);
+
+    const datosProcesados = result.rows.map((r) => {
+      const montoCuota = r.MONTO || 0;
+      const montoTotalVenta = r.MONTO_TOTAL_VENTA || 0;
+      const rawAbono = (r.RAW_FECHA_ABONO || r.FECHA_ABONO || '').trim();
+
+      let deudaPorPagar = 0;
+      let esPendiente = false;
+
+      if (!rawAbono) {
+        esPendiente = true;
+      } else {
+        let dA, mA, aA;
+        if (rawAbono.includes('/')) {
+          const partes = rawAbono.split('/');
+          dA = parseInt(partes[0]);
+          mA = parseInt(partes[1]) - 1;
+          aA = parseInt(partes[2]);
+          if (aA < 100) aA += 2000;
+        } else {
+          dA = parseInt(rawAbono.substring(0, 2));
+          mA = parseInt(rawAbono.substring(2, 4)) - 1;
+          aA = parseInt(rawAbono.substring(4, 8));
+        }
+
+        const fechaAbono = new Date(aA, mA, dA, 0, 0, 0, 0);
+        if (fechaAbono.getTime() > fechaCorte.getTime()) esPendiente = true;
+      }
+
+      deudaPorPagar = esPendiente ? (tipoUpper === 'LCN' ? montoCuota : montoTotalVenta) : 0;
+
+      // Retornamos un objeto limpio para el Excel
+      return {
+        CUPON: r.CUPON,
+        'COD. AUTORIZACIÓN': r.CODIGO_AUTORIZACION,
+        'TIPO DOC': r.TIPO_DOCUMENTO,
+        'FECHA VENTA': r.FECHA_VENTA,
+        'FECHA ABONO': r.FECHA_ABONO,
+        'MONTO VENTA': montoTotalVenta,
+        CUOTA: parseInt(r.CUOTA) || 1,
+        'TOTAL CUOTAS': parseInt(r.TOTAL_CUOTAS) || 1,
+        'SALDO PENDIENTE': deudaPorPagar,
+      };
+    });
+
+    // Filtramos para que el Excel solo tenga las deudas reales
+    const soloPendientes = datosProcesados.filter((f) => f['SALDO PENDIENTE'] > 0);
+
+    // Llamamos a tu función de exportación
+    const nombreArchivo = `Saldo_Pendiente_${tipoUpper}_${fecha}.xlsx`;
+    await exportToExcel(soloPendientes, res, nombreArchivo);
+  } finally {
+    if (connection) {
+      await connection.close();
+    }
+  }
+}
+
 module.exports = {
   getSaldoPendienteService,
+  getSaldoPendienteServiceExcel,
 };

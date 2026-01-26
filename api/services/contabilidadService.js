@@ -33,7 +33,7 @@ async function getDataDescargaExcel({ fecha_inicio, fecha_fin }) {
 
     SELECT
       TO_DATE(liq_fpago, 'DDMMYYYY') AS FECHA_REAL, 'CREDITO' AS TIPO, liq_fpago AS FECHA_TEXTO,
-      SUM(TRUNC(liq_monto / 100)) AS TOTAL_MONTO, NULL AS CODIGO_COMERCIO, NULL AS NOMBRE_COMERCIO,
+      TRUNC(SUM(liq_monto / 100)) AS TOTAL_MONTO, NULL AS CODIGO_COMERCIO, NULL AS NOMBRE_COMERCIO,
       NULL AS CUENTA_CORRIENTE, NULL AS BANCO, NULL AS CUENTA_CONTABLE, NULL AS DESCRIPCION
     FROM lcn_tbk_historico
     WHERE
@@ -70,13 +70,12 @@ async function getDataDescargaExcel({ fecha_inicio, fecha_fin }) {
 async function getDataExcelPorDia({ fecha }) {
   const connection = await getConnection();
   try {
-    // La consulta se define con una única cláusula WITH al inicio
     const sql = `
       WITH Clases_Documento_Unicas_C AS (
           SELECT
               l.liq_monto, l.liq_orpedi, l.liq_codaut, l.liq_fcom,
-              TO_DATE(l.liq_fpago, 'DDMMYYYY') AS FECHA_REAL, 'CREDITO' AS TIPO, NULL AS FECHA_TEXTO, NULL AS CODIGO_COMERCIO,
-              NULL AS NOMBRE_COMERCIO, NULL AS CUENTA_CORRIENTE, NULL AS BANCO, '1101050021' AS CUENTA_CONTABLE_COMERCIO, NULL AS DESCRIPCION,
+              TO_DATE(l.liq_fpago, 'DDMMYYYY') AS FECHA_REAL, 'CREDITO' AS TIPO, NULL AS FECHA_TEXTO, 
+              TO_CHAR(TRIM(l.liq_numc)) AS CODIGO_COMERCIO,
               NVL(h.tipo_documento, 'Z5') AS clase_doc_final, 
               ROW_NUMBER() OVER (PARTITION BY l.liq_orpedi, l.liq_codaut, l.liq_fcom ORDER BY h.tipo_documento DESC) AS rn
           FROM
@@ -88,8 +87,6 @@ async function getDataExcelPorDia({ fecha }) {
               ) OR (
                   NOT REGEXP_LIKE(TRIM(l.liq_orpedi), '^[0-9]*[1-9][0-9]*$') AND TRIM(l.liq_codaut) = h.DKTT_DT_APPRV_CDE
               )
-              
-              -- --- AJUSTE ORA-01858 (CRÉDITO): Protege TO_DATE de valores no numéricos en la unión.
               AND TO_DATE(
                   CASE WHEN REGEXP_LIKE(TO_CHAR(l.liq_fcom), '^[0-9]{7,8}$') THEN LPAD(TO_CHAR(l.liq_fcom), 8, '0') ELSE NULL END, 
                   'DDMMYYYY'
@@ -97,24 +94,26 @@ async function getDataExcelPorDia({ fecha }) {
                   CASE WHEN REGEXP_LIKE(TO_CHAR(h.DKTT_DT_TRAN_DAT), '^[0-9]{5,6}$') THEN LPAD(TO_CHAR(h.DKTT_DT_TRAN_DAT), 6, '0') ELSE NULL END, 
                   'RRMMDD'
               )
-              
           WHERE
-              -- --- AJUSTE FILTRO (CRÉDITO): Asegura la igualdad de fechas a nivel de día.
               TRUNC(TO_DATE(l.liq_fpago, 'DDMMYYYY')) = TRUNC(TO_DATE(:fecha, 'DD/MM/YYYY'))
       ),
       Consolidacion_Final_C AS (
           SELECT
-              cdu.FECHA_REAL, cdu.TIPO, cdu.FECHA_TEXTO, cdu.CODIGO_COMERCIO, cdu.NOMBRE_COMERCIO, 
-              cdu.CUENTA_CORRIENTE, cdu.BANCO, cdu.CUENTA_CONTABLE_COMERCIO, cdu.DESCRIPCION,
-              CASE WHEN cdu.clase_doc_final = 'ZC' THEN 'ZB' ELSE cdu.clase_doc_final END AS clase_consolidada,
-              cdu.liq_monto
+              cdu.*,
+              -- Mantenemos las clases originales de crédito, ZC se consolida en ZB
+              CASE 
+                WHEN cdu.clase_doc_final = 'Z5' THEN 'Z5'
+                WHEN cdu.clase_doc_final = 'ZA' THEN 'ZA'
+                ELSE 'ZB' 
+              END AS clase_consolidada
           FROM Clases_Documento_Unicas_C cdu
           WHERE cdu.rn = 1
       ),
       Clases_Documento_Unicas_D AS (
           SELECT
               l.liq_amt_1, l.liq_nro_unico, l.liq_appr, l.liq_fcom,
-              TO_DATE(l.liq_fedi, 'DD/MM/RR') AS FECHA_REAL, 'DEBITO' AS TIPO, l.liq_fedi AS FECHA_TEXTO, l.liq_ccre AS CODIGO_COMERCIO_ID,
+              TO_DATE(l.liq_fedi, 'DD/MM/RR') AS FECHA_REAL, 'DEBITO' AS TIPO, l.liq_fedi AS FECHA_TEXTO, 
+              TO_CHAR(TRIM(l.liq_ccre)) AS CODIGO_COMERICO,
               NVL(h.tipo_documento, 'Z5') AS clase_doc_final, 
               ROW_NUMBER() OVER (PARTITION BY l.liq_nro_unico, l.liq_appr, l.liq_fcom, l.liq_amt_1 ORDER BY h.tipo_documento DESC) AS rn
           FROM
@@ -125,8 +124,6 @@ async function getDataExcelPorDia({ fecha }) {
               ) OR (
                   NOT REGEXP_LIKE(TRIM(l.liq_nro_unico), '^[0-9]*[1-9][0-9]*$') AND TRIM(l.liq_appr) = h.DSK_APPVR_CDE
               )
-              
-              -- --- AJUSTE ORA-01858 (DÉBITO): Protege TO_DATE de valores no numéricos en la unión.
               AND TO_DATE(
                   CASE WHEN REGEXP_LIKE(TO_CHAR(l.liq_fcom), '^[0-9]{5,6}$') THEN LPAD(TO_CHAR(l.liq_fcom), 6, '0') ELSE NULL END, 
                   'DDMMRR'
@@ -136,77 +133,77 @@ async function getDataExcelPorDia({ fecha }) {
               )
               AND l.LIQ_AMT_1 = h.DSK_AMT_1
           WHERE
-              -- --- AJUSTE FILTRO (DÉBITO): Asegura la igualdad de fechas a nivel de día.
               TRUNC(TO_DATE(l.liq_fedi, 'DD/MM/RR')) = TRUNC(TO_DATE(:fecha, 'DD/MM/YYYY')) 
               AND l.liq_ccre NOT IN ( '28208820', '48211418', '41246590', '41246593', '41246594' )
       ),
       Consolidacion_Final_D AS (
           SELECT
-              cdu.FECHA_REAL, cdu.TIPO, cdu.FECHA_TEXTO, cdu.CODIGO_COMERCIO_ID, 
-              CASE WHEN cdu.clase_doc_final IN ('ZA', 'ZC') THEN 'ZA' ELSE cdu.clase_doc_final END AS clase_consolidada,
-              cdu.liq_amt_1
+              cdu.*,
+              CASE WHEN cdu.clase_doc_final IN ('ZA', 'ZC') THEN 'ZA' ELSE cdu.clase_doc_final END AS clase_consolidada
           FROM Clases_Documento_Unicas_D cdu
           WHERE cdu.rn = 1
       ),
-      Cuenta_Factores AS (
-          SELECT clase_documento_sap AS clase_consolidada, COUNT(DISTINCT CUENTA_CONTABLE) AS factor_multiplicador
-          FROM vec_cob02.tipo_pago_descripcion
-          GROUP BY clase_documento_sap
-      ),
       Suma_Consolidada_C AS (
-          SELECT clase_consolidada, SUM(TRUNC(liq_monto / 100)) AS monto_total_correcto
+          SELECT 
+              clase_consolidada, 
+              -- Nueva Lógica: ZA y ZB desglosan por comercio, Z5 es Global
+              CASE WHEN clase_consolidada IN ('ZA', 'ZB') THEN CODIGO_COMERCIO ELSE 'GLOBAL' END AS grupo_id,
+              SUM(TRUNC(liq_monto / 100)) AS monto_total_correcto
           FROM Consolidacion_Final_C
-          GROUP BY clase_consolidada
+          GROUP BY 
+              clase_consolidada, 
+              CASE WHEN clase_consolidada IN ('ZA', 'ZB') THEN CODIGO_COMERCIO ELSE 'GLOBAL' END
       ),
       Suma_Consolidada_D AS (
-          SELECT cf.clase_consolidada, cf.CODIGO_COMERCIO_ID, SUM(cf.liq_amt_1 / 100) AS monto_total_correcto
-          FROM Consolidacion_Final_D cf
-          GROUP BY cf.clase_consolidada, cf.CODIGO_COMERCIO_ID
+          SELECT 
+              clase_consolidada, 
+              CASE WHEN clase_consolidada IN ('ZA', 'ZB') THEN CODIGO_COMERICO ELSE 'GLOBAL' END AS grupo_id,
+              SUM(TRUNC(liq_amt_1 / 100)) AS monto_total_correcto
+          FROM Consolidacion_Final_D
+          GROUP BY 
+              clase_consolidada, 
+              CASE WHEN clase_consolidada IN ('ZA', 'ZB') THEN CODIGO_COMERICO ELSE 'GLOBAL' END
       )
       -- RAMA 1: CRÉDITO
       SELECT
           cf.clase_consolidada AS CLASE_DOCUMENTO, cf.FECHA_REAL, cf.TIPO, cf.FECHA_TEXTO,
-          sc.monto_total_correcto / NVL(af.factor_multiplicador, 1) AS TOTAL_MONTO, 
-          cf.CODIGO_COMERCIO, cf.NOMBRE_COMERCIO, cf.CUENTA_CORRIENTE, cf.BANCO, 
-          cf.CUENTA_CONTABLE_COMERCIO, cf.DESCRIPCION, tpd_za.CUENTA_CONTABLE AS CUENTA_TRANSACCION
+          sc.monto_total_correcto AS TOTAL_MONTO, 
+          cf.CODIGO_COMERCIO, c.nombre_comercio AS NOMBRE_COMERCIO, 
+          c.cuenta_corriente AS CUENTA_CORRIENTE, c.banco AS BANCO, 
+          NVL(c.cuenta_contable, '1101050021') AS CUENTA_CONTABLE_COMERCIO, 
+          c.descripcion AS DESCRIPCION, tpd_za.CUENTA_CONTABLE AS CUENTA_TRANSACCION
       FROM
           Consolidacion_Final_C cf
-      LEFT JOIN vec_cob02.tipo_pago_descripcion tpd_za 
-          ON tpd_za.clase_documento_sap = cf.clase_consolidada
-      LEFT JOIN Cuenta_Factores af
-          ON af.clase_consolidada = cf.clase_consolidada
+      LEFT JOIN vec_cob04.codigo_comerico c ON c.codigo_comerico = cf.CODIGO_COMERCIO
+      LEFT JOIN vec_cob02.tipo_pago_descripcion tpd_za ON tpd_za.clase_documento_sap = cf.clase_consolidada
       LEFT JOIN Suma_Consolidada_C sc
           ON sc.clase_consolidada = cf.clase_consolidada
+          AND sc.grupo_id = (CASE WHEN cf.clase_consolidada IN ('ZA', 'ZB') THEN cf.CODIGO_COMERCIO ELSE 'GLOBAL' END)
       GROUP BY
-          cf.clase_consolidada, cf.FECHA_REAL, cf.TIPO, cf.FECHA_TEXTO,
-          sc.monto_total_correcto / NVL(af.factor_multiplicador, 1),
-          cf.CODIGO_COMERCIO, cf.NOMBRE_COMERCIO, cf.CUENTA_CORRIENTE, cf.BANCO, 
-          cf.CUENTA_CONTABLE_COMERCIO, cf.DESCRIPCION, tpd_za.CUENTA_CONTABLE
+          cf.clase_consolidada, cf.FECHA_REAL, cf.TIPO, cf.FECHA_TEXTO, sc.monto_total_correcto,
+          cf.CODIGO_COMERCIO, c.nombre_comercio, c.cuenta_corriente, c.banco, 
+          NVL(c.cuenta_contable, '1101050021'), c.descripcion, tpd_za.CUENTA_CONTABLE
 
       UNION ALL
 
       -- RAMA 2: DÉBITO
       SELECT
           cf.clase_consolidada AS CLASE_DOCUMENTO, cf.FECHA_REAL, cf.TIPO, cf.FECHA_TEXTO,
-          sc.monto_total_correcto / NVL(af.factor_multiplicador, 1) AS TOTAL_MONTO,
-          cf.CODIGO_COMERCIO_ID AS CODIGO_COMERCIO, c.nombre_comercio AS NOMBRE_COMERCIO,
+          sc.monto_total_correcto AS TOTAL_MONTO,
+          cf.CODIGO_COMERICO AS CODIGO_COMERCIO, c.nombre_comercio AS NOMBRE_COMERCIO,
           c.cuenta_corriente AS CUENTA_CORRIENTE, c.banco AS BANCO, 
           c.cuenta_contable AS CUENTA_CONTABLE_COMERCIO, c.descripcion AS DESCRIPCION,
           tpd_za.CUENTA_CONTABLE AS CUENTA_TRANSACCION
       FROM
           Consolidacion_Final_D cf
-      LEFT JOIN vec_cob04.codigo_comerico c 
-          ON c.codigo_comerico = cf.CODIGO_COMERCIO_ID
-      LEFT JOIN vec_cob02.tipo_pago_descripcion tpd_za
-          ON tpd_za.clase_documento_sap = cf.clase_consolidada
-      LEFT JOIN Cuenta_Factores af
-          ON af.clase_consolidada = cf.clase_consolidada
+      LEFT JOIN vec_cob04.codigo_comerico c ON c.codigo_comerico = cf.CODIGO_COMERICO
+      LEFT JOIN vec_cob02.tipo_pago_descripcion tpd_za ON tpd_za.clase_documento_sap = cf.clase_consolidada
       LEFT JOIN Suma_Consolidada_D sc
-          ON sc.clase_consolidada = cf.clase_consolidada AND sc.CODIGO_COMERCIO_ID = cf.CODIGO_COMERCIO_ID
+          ON sc.clase_consolidada = cf.clase_consolidada 
+          AND sc.grupo_id = (CASE WHEN cf.clase_consolidada IN ('ZA', 'ZB') THEN cf.CODIGO_COMERICO ELSE 'GLOBAL' END)
       GROUP BY
-          cf.clase_consolidada, cf.FECHA_REAL, cf.TIPO, cf.FECHA_TEXTO,
-          sc.monto_total_correcto / NVL(af.factor_multiplicador, 1),
-          cf.CODIGO_COMERCIO_ID, c.nombre_comercio, c.cuenta_corriente, c.banco, 
+          cf.clase_consolidada, cf.FECHA_REAL, cf.TIPO, cf.FECHA_TEXTO, sc.monto_total_correcto,
+          cf.CODIGO_COMERICO, c.nombre_comercio, c.cuenta_corriente, c.banco, 
           c.cuenta_contable, c.descripcion, tpd_za.CUENTA_CONTABLE
       ORDER BY
           FECHA_REAL, CLASE_DOCUMENTO
@@ -219,7 +216,6 @@ async function getDataExcelPorDia({ fecha }) {
       await connection.close();
     } catch (err) {
       console.error('Error closing connection:', err);
-      // Opcional: manejar el error de cierre, aunque generalmente se ignora.
     }
   }
 }
