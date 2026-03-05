@@ -4,7 +4,7 @@ const { getConnection } = require('../config/utils'); // tu conexión Oracle
 async function obtenerNombresArchivosProcesados() {
   const connection = await getConnection();
   const result = await connection.execute(
-    `SELECT NOMBRE_ARCHIVO FROM LOG_ARCHIVOS_PROCESADOS`,
+    `SELECT NOMBRE_ARCHIVO FROM LOG_ARCHIVOS_PROCESADOS WHERE FECHA_CARGA > SYSDATE - 30`,
     [],
     { outFormat: oracledb.OUT_FORMAT_OBJECT }
   );

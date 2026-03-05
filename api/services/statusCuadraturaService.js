@@ -419,7 +419,9 @@ async function getTotalesInformativos({ fecha }) {
       COUNT(*) AS CANTIDAD,
       SUM(TRUNC(c.DKTT_DT_AMT_1 / 100)) AS MONTO_TOTAL,
       SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) IN ('ENCONTRADO', 'PROCESADO') THEN 1 ELSE 0 END) AS APROBADOS_CANTIDAD,
-      SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) IN ('ENCONTRADO', 'PROCESADO') THEN TRUNC(c.DKTT_DT_AMT_1 / 100) ELSE 0 END) AS APROBADOS_MONTO
+      SUM(CASE WHEN UPPER(c.STATUS_SAP_REGISTER) IN ('ENCONTRADO', 'PROCESADO') THEN TRUNC(c.DKTT_DT_AMT_1 / 100) ELSE 0 END) AS APROBADOS_MONTO,
+      SUM(CASE WHEN c.TIPO_TRANSACCION = 'CDN' THEN TRUNC(c.DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_DEBITO,
+      SUM(CASE WHEN c.TIPO_TRANSACCION = 'CCN' THEN TRUNC(c.DKTT_DT_AMT_1 / 100) ELSE 0 END) AS MONTO_CREDITO
     FROM CUADRATURA_FILE_TBK c
     LEFT JOIN (
         SELECT id_cuadratura, respuesta, cupon_limpio,
@@ -439,12 +441,25 @@ async function getTotalesInformativos({ fecha }) {
 
   try {
     const res = await connection.execute(sql, { fecha }, options);
-
     // Inicializamos el objeto de respuesta para asegurar que siempre vengan ambos perfiles
     const respuesta = {
       fecha,
-      sd: { total: 0, monto: 0, aprobados: 0, monto_aprobados: 0 },
-      fica: { total: 0, monto: 0, aprobados: 0, monto_aprobados: 0 },
+      sd: {
+        total: 0,
+        monto: 0,
+        aprobados: 0,
+        monto_aprobados: 0,
+        monto_debito: 0,
+        monto_credito: 0,
+      },
+      fica: {
+        total: 0,
+        monto: 0,
+        aprobados: 0,
+        monto_aprobados: 0,
+        monto_debito: 0,
+        monto_credito: 0,
+      },
       global: { total: 0, monto: 0 },
     };
 
@@ -455,6 +470,8 @@ async function getTotalesInformativos({ fecha }) {
         monto: Number(row.MONTO_TOTAL || 0),
         aprobados: Number(row.APROBADOS_CANTIDAD || 0),
         monto_aprobados: Number(row.APROBADOS_MONTO || 0),
+        monto_debito: Number(row.MONTO_DEBITO || 0),
+        monto_credito: Number(row.MONTO_CREDITO || 0),
       };
       // Acumulamos el gran total
       respuesta.global.total += Number(row.CANTIDAD || 0);

@@ -7,12 +7,11 @@ const os = require('os');
 const path = require('path');
 const ExcelJS = require('exceljs');
 // Inicializar modo Thick (esto habilita compatibilidad con versiones antiguas)
-oracledb.initOracleClient({ libDir: '/opt/oracle' }); // Cambia según tu sistema
+oracledb.initOracleClient({ libDir: '/opt/oracle' }); // Cambia según tu sistema (localhost)
 
 // Fuerza THICK explícitamente y apunta al Instant Client
-
 //process.env.NODE_ORACLEDB_DRIVER_MODE = 'thick';
-//oracledb.initOracleClient({ libDir: '/opt/oracle/instantclient' });
+//oracledb.initOracleClient({ libDir: '/opt/oracle/instantclient' }); //producción
 
 async function conectarSFTP({ host, port, username, password }) {
   await sftp.connect({
@@ -32,7 +31,7 @@ async function getConnection() {
 }
 
 function obtenerFechaDesdeNombre(nombreArchivo) {
-  const match = nombreArchivo.match(/_(\d{8})_/);
+  const match = nombreArchivo.match(/_(\d{8})(?:_|\.)/);
   if (!match) return null;
 
   const fechaStr = match[1]; // ejemplo: "28042025"

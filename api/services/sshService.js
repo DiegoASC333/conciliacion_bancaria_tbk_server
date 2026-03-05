@@ -51,7 +51,15 @@ function ejecutarScriptRemoto({ host, port, username, password, rutaScript }) {
             password: process.env.SSH_PASSWORD
         });
         /*/
-    conn.connect({ host, port, username, password });
+    conn.connect({
+      host,
+      port,
+      username,
+      password,
+      readyTimeout: 60000,
+      keepaliveInterval: 10000,
+      keepaliveCountMax: 10,
+    });
   });
 }
 

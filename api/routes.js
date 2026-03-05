@@ -47,6 +47,8 @@ const {
   getSaldoPendienteXls,
 } = require('./controllers/SaldoPendienteController.js');
 const { getVentasController, getReportexls } = require('./controllers/reporteVentaController.js');
+const { procesarCuadraturas } = require('./controllers/cuadraturaController.js');
+const { procesarLiquidaciones } = require('./controllers/liquidacionesController.js');
 
 //Rutas
 router.post('/ejecutar-script', ejecutarScript); //ejecucion manual de script remoto
@@ -81,5 +83,7 @@ router.post('/saldo-pendiente', SaldoPendienteController); // saldo pendiente
 router.post('/saldo-pendiente-excel', getSaldoPendienteXls); // excel para saldo pendiente
 router.post('/reporte-ventas', getVentasController); // reporte de ventas por transacción tipo
 router.post('/reporte-ventas-excel', getReportexls); // excel reporte de ventas
+router.post('/procesar-cuadraturas', procesarCuadraturas); // descarga diaria de cuadraturas
+router.post('/procesar-liquidaciones', procesarLiquidaciones); //descarga diaria de liquidaciones
 
 module.exports = router;
